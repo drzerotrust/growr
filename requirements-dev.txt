@@ -1,0 +1,7 @@
+-r requirements.txt
+mypy
+pytest
+ruff
+types-requests
+types-jsonschema
+jsonschema[format-nongpl]>=4,<5

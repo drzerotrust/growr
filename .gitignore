@@ -1,0 +1,28 @@
+.env
+.venv
+__pycache__/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+*.pyc
+*.egg-info/
+dist/
+build/
+
+# Local interactive client and assets.
+/client.py
+/data/
+
+# Local agent configuration, skills, and documentation.
+/.agents/
+/.codex/
+/AGENTS.md
+/skills-lock.json
+/docs/
+/REFERENCES.md
+
+# Local environments, logs, and editor files.
+/venv/
+/logs/
+*.swp
+*.swo
