@@ -34,7 +34,9 @@ def validate(document):
 
 def output_for(report, *command, raw=False):
     flags = ["--json", "--include-raw"] if raw else ["--json"]
-    args = growr.build_parser().parse_args([*flags, *command])
+    parser = growr.build_parser()
+    args = parser.parse_args([*flags, *command])
+    growr._validate_search_arguments(parser, args)
     return validate(json.loads(serialize(build_response(Run(), args, report))))
 
 

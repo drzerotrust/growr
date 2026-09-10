@@ -325,6 +325,8 @@ With `--json`, invalid commands return the structured error envelope instead.
 boosted discovery. `dexcreener` is accepted as a spelling alias. Existing
 `list --stonk`, `list --boosted`, and `list --community-takeovers` commands
 remain supported. The entry point is `growr.py`, following the project rename.
+Stonks selectors cannot be combined with Dexscreener feed flags. An explicit
+`--stonk-search` requires Stonks, including when its value is `recent`.
 
 Both Dexscreener feeds list only Solana tokens. Entries from other chains or
 without a chain ID are excluded before social scoring and RPC verification.

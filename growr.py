@@ -264,7 +264,6 @@ def build_parser() -> argparse.ArgumentParser:
     list_parser.add_argument(
         "--stonk-search",
         choices=("recent", "marketCap", "volume"),
-        default="recent",
         help=(
             "Stonks discovery: recent launches, market cap, or volume "
             "(default: recent)."
@@ -302,19 +301,23 @@ def _validate_search_arguments(parser, args) -> None:
 
     parser = args.command_parser
     if args.provider == "stonks":
-        if args.boosted or args.community_takeovers:
-            parser.error("Dexscreener feed options cannot select Stonks")
         args.stonk = True
     elif args.provider is not None:
         if args.stonk:
             parser.error("--stonk conflicts with the Dexscreener provider")
         args.boosted = args.boosted or not args.community_takeovers
 
+    # Apply provider conflicts to positional and legacy selectors alike.
+    if args.stonk and (args.boosted or args.community_takeovers):
+        parser.error("Dexscreener feed options cannot select Stonks")
+
     if not (args.stonk or args.boosted or args.community_takeovers):
         parser.error("Missing provider: choose stonks or dexscreener")
 
-    if args.stonk_search != "recent" and not args.stonk:
+    if args.stonk_search is not None and not args.stonk:
         parser.error("--stonk-search requires list stonks")
+    # Apply the default after checking an explicitly supplied mode.
+    args.stonk_search = args.stonk_search or "recent"
 
     has_pagination = args.page is not None or args.page_size is not None
     supports_platform_options = args.stonk and args.stonk_search != "recent"
