@@ -33,9 +33,17 @@ def require_token_program_owner(owner, account_kind) -> None:
     """
 
     if owner not in TOKEN_PROGRAM_OWNERS:
-        raise ValueError(
-            f"Account is not an SPL {account_kind} (owner={owner})"
+        message = "Account is not an SPL %s or Token-2022 %s (owner=%s)." % (
+            account_kind,
+            account_kind,
+            owner,
         )
+        if owner == "11111111111111111111111111111111":
+            message += (
+                " This is a System Program account; use growr.py wallet "
+                "<ADDRESS> for wallet inspection."
+            )
+        raise ValueError(message)
 
 
 def token_program_name(owner) -> str:
@@ -82,16 +90,26 @@ def parse_optional_pubkey(data, offset) -> str | None:
 def _validate_layout(data, owner, kind, base_size, account_type) -> None:
     """Distinguish base layouts, extended layouts, and multisigs."""
 
+    # Wallets normally have no data. Check their owning program first
+    # so they get an account-type diagnostic instead of a length error.
     require_token_program_owner(owner, kind)
     size = len(data)
+    if size < base_size:
+        raise ValueError(
+            (
+                "Account data is too short for a %s: expected at least %s "
+                "bytes, got %s"
+            )
+            % (kind, base_size, size)
+        )
     if size == base_size:
         return
     if owner == str(SPL_TOKEN_PROGRAM_ID):
-        raise ValueError(f"Invalid SPL {kind} account size")
+        raise ValueError("Invalid SPL %s account size" % kind)
     # Token-2022 keeps base accounts valid. Extended accounts share a
     # discriminator at byte 165; 355 bytes is reserved for multisigs.
     if size < 166 or size == 355 or data[165] != account_type:
-        raise ValueError(f"Invalid Token-2022 {kind} account type")
+        raise ValueError("Invalid Token-2022 %s account type" % kind)
     if base_size == 82 and any(data[82:165]):
         raise ValueError("Invalid Token-2022 mint padding")
 
@@ -110,10 +128,6 @@ def parse_mint(data, owner) -> dict[str, Any]:
         ValueError: If ownership, layout, or flags are invalid.
     """
 
-    if len(data) < 82:
-        raise ValueError(
-            "Mint account is shorter than the SPL Token mint layout"
-        )
     _validate_layout(data, owner, "mint", 82, 1)
     if data[45] not in (0, 1):
         raise ValueError("Invalid SPL mint initialization flag")
@@ -134,7 +148,7 @@ def parse_mint(data, owner) -> dict[str, Any]:
 
 
 def parse_token_account(data, owner_program) -> dict[str, Any]:
-    """Decode the 165-byte base SPL token-account layout.
+    """Decode the shared SPL Token and Token-2022 account base.
 
     Args:
         data: Raw token-account bytes.
@@ -147,8 +161,6 @@ def parse_token_account(data, owner_program) -> dict[str, Any]:
         ValueError: If ownership, layout, or flags are invalid.
     """
 
-    if len(data) < 165:
-        raise ValueError("Account is too short to be an SPL token account")
     _validate_layout(data, owner_program, "token account", 165, 2)
     if int.from_bytes(data[109:113], "little") not in (0, 1):
         raise ValueError("Invalid SPL native-balance option tag")

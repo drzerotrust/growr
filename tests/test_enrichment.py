@@ -11,7 +11,6 @@ from solders.pubkey import Pubkey
 from growr_cli.enrichment import (
     LaunchEnricher,
     activity_metrics,
-    choose_pair,
     normalize,
 )
 from growr_cli.models import (
@@ -63,19 +62,15 @@ def providers_for(mints, jupiter=None):
         )
         for mint in mints
     }
-    client.get_dexscreener_tokens.return_value = {
-        mint: EnrichmentResult("no_data", "dex-time", []) for mint in mints
-    }
     client.jupiter.get_tokens = client.get_jupiter_tokens
-    client.dexscreener.get_tokens = client.get_dexscreener_tokens
     return client
 
 
 def enricher(client, scan=None):
-    return LaunchEnricher(client.jupiter, client.dexscreener, scan)
+    return LaunchEnricher(client.jupiter, scan)
 
 
-def test_jupiter_success_dex_empty_preserves_discovery_and_unknowns():
+def test_jupiter_preserves_discovery_and_unknowns():
     report = launch_report()
     original = deepcopy(report.to_dict())
     result = enricher(providers_for([MINT])).enrich(report).to_dict()
@@ -83,7 +78,6 @@ def test_jupiter_success_dex_empty_preserves_discovery_and_unknowns():
     analytics = pool.pop("analytics")
     assert result == original
     assert analytics["jupiter"]["fetched_at"] == "jupiter-time"
-    assert analytics["dexscreener"]["status"] == "no_data"
     assert analytics["on_chain"] is None
     assert (
         analytics["metrics"]["market"]["token_liquidity_usd"]["value"] is None
@@ -104,7 +98,6 @@ def test_duplicate_mints_are_requested_once_but_launch_order_is_kept():
     scan = Mock(return_value=ScanReport("token", MINT, "test", "now"))
     result = enricher(client, scan).enrich(launch_report(launches))
     client.get_jupiter_tokens.assert_called_once_with([MINT, OTHER])
-    client.get_dexscreener_tokens.assert_called_once_with([MINT, OTHER])
     assert scan.call_count == 2
     assert [pool["pool"] for pool in result.findings.tokens["pools"]] == [
         "0",
@@ -147,40 +140,13 @@ def test_empty_discovery_does_not_call_any_provider():
     scan.assert_not_called()
 
 
-def pair(address, liquidity, mint=MINT, chain="solana"):
-    return {
-        "pairAddress": address,
-        "liquidity": {"usd": liquidity},
-        "baseToken": {"address": mint},
-        "chainId": chain,
-    }
-
-
-def test_pair_selection_prioritizes_original_and_excludes_quote_matches():
-    pairs = [
-        pair("original", 5),
-        pair("deep", 100),
-        pair("wrong", 500, OTHER),
-        pair("wrong-chain", 600, chain="ethereum"),
-    ]
-    assert (
-        choose_pair(pairs, {"mint": MINT, "pool": "original"})["pairAddress"]
-        == "original"
-    )
-    assert (
-        choose_pair(pairs, {"mint": MINT, "pool": "unindexed"})["pairAddress"]
-        == "deep"
-    )
-    assert choose_pair([pair("wrong", 500, OTHER)], {"mint": MINT}) == {}
-
-
 @pytest.mark.parametrize(
     ("buy", "sell", "net", "share"),
     [(10, 5, 5, 2 / 3), (0, 0, 0, None), (0, 10, -10, 0)],
 )
 def test_activity_calculations(buy, sell, net, share):
     stats = activity_metrics(
-        {"stats5m": {"buyVolume": buy, "sellVolume": sell}}, {}
+        {"stats5m": {"buyVolume": buy, "sellVolume": sell}}
     )["5m"]["jupiter"]
     assert stats["net_buy_volume_usd"]["value"] == net
     assert stats["buy_volume_share"]["value"] == share
@@ -192,29 +158,27 @@ def test_activity_calculations(buy, sell, net, share):
 def test_incomplete_or_invalid_activity_has_no_derived_ratio(bad):
     stats = activity_metrics(
         {"stats5m": {"buyVolume": 10, "sellVolume": bad}},
-        {"txns": {"m5": {"sells": 3}}},
     )
     assert "buy_volume_share" not in stats["5m"]["jupiter"]
 
 
 def test_fallback_and_liquidity_scope_keep_zero_and_sources():
     result = normalize(
-        {"marketCapUsd": 5},
-        {"mcap": 0},
-        {"priceUsd": "0.002", "liquidity": {"usd": 100}},
+        {"marketCapUsd": 5, "priceUsd": 0.002},
+        {"mcap": 0, "liquidity": 100},
     )
     market = result["market"]
     assert market["market_cap_usd"]["value"] == 0
     assert market["market_cap_usd"]["source"] == "jupiter"
-    assert market["price_usd"]["source"] == "dexscreener"
-    assert market["token_liquidity_usd"]["value"] is None
-    assert market["pool_liquidity_usd"] == {
+    assert market["price_usd"]["source"] == "stonks"
+    assert market["token_liquidity_usd"] == {
         "value": 100.0,
-        "source": "dexscreener",
-        "scope": "pool",
+        "source": "jupiter",
+        "scope": "token",
     }
+    assert "pool_liquidity_usd" not in market
     assert (
-        normalize({"marketCapUsd": 5}, {}, {})["market"]["market_cap_usd"][
+        normalize({"marketCapUsd": 5}, {})["market"]["market_cap_usd"][
             "source"
         ]
         == "stonks"
@@ -252,7 +216,7 @@ def test_table_sanitizes_external_text_and_preserves_json(capsys):
         and "1% S" in text
         and "—" in text
     )
-    assert "dexscreener=no_data" in text
+    assert "jupiter=success" in text
 
 
 def test_rpc_and_provider_observations_are_displayed_separately(capsys):

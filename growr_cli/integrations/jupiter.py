@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from solders.pubkey import Pubkey
+
 from growr_cli import settings
 from growr_cli.analysis.metrics import mapping, metric, number
 from growr_cli.integrations.http import provider_result
@@ -12,6 +14,9 @@ from growr_cli.models import (
     EnrichmentResult,
     ProviderSnapshot,
 )
+
+JUPITER_CATEGORIES = ("toporganicscore", "toptraded", "toptrending")
+JUPITER_INTERVALS = ("5m", "1h", "6h", "24h")
 
 
 class JupiterClient:
@@ -42,7 +47,7 @@ class JupiterClient:
         if not self.jupiter_api_key:
             return None, "Jupiter API key is not configured"
 
-        url = f"{settings.JUPITER_API_URL}/search"
+        url = "%s/search" % settings.JUPITER_API_URL
         headers = {"x-api-key": self.jupiter_api_key}
         data, error = self.http.get_json(
             url, params={"query": mint}, headers=headers
@@ -62,9 +67,28 @@ class JupiterClient:
         return None, None
 
     def _jupiter_item_matches(self, item, mint) -> bool:
-        return any(
-            item.get(field) == mint for field in ("id", "address", "mint")
+        # The documented id wins over compatibility aliases. A nearby
+        # result cannot override a conflicting mint identifier.
+        identifier = item.get("id", item.get("address", item.get("mint")))
+        return identifier == mint
+
+    def discover(
+        self, mode="recent", *, query=None, interval=None, limit=None
+    ) -> list[dict[str, Any]]:
+        """Fetch one discovery response with validated options."""
+
+        if not self.jupiter_api_key:
+            raise ValueError("Jupiter discovery requires JUPITER_API_KEY")
+        path, params = discovery_request(mode, query, interval, limit)
+        data, error = self.http.get_records(
+            "%s/%s" % (settings.JUPITER_API_URL, path),
+            params=params,
+            headers={"x-api-key": self.jupiter_api_key},
+            source="Jupiter",
         )
+        if error:
+            raise ValueError(error)
+        return data
 
     def get_token(self, mint) -> EnrichmentResult:
         """Return single-token data with explicit coverage."""
@@ -98,7 +122,7 @@ class JupiterClient:
                 for mint in mints
             }
         records, error = self.http.get_records(
-            f"{settings.JUPITER_API_URL}/search",
+            "%s/search" % settings.JUPITER_API_URL,
             params={"query": ",".join(mints)},
             headers={"x-api-key": self.jupiter_api_key},
         )
@@ -134,6 +158,21 @@ def token_summary(token) -> dict[str, Any]:
         "holder_count": token.get("holderCount"),
         "verified": token.get("isVerified"),
         "launchpad": token.get("launchpad"),
+        "fdv_usd": token.get("fdv"),
+        "organic_score": token.get("organicScore"),
+        "organic_score_label": token.get("organicScoreLabel"),
+        "developer": token.get("dev"),
+        "token_program": token.get("tokenProgram"),
+        "total_supply": token.get("totalSupply"),
+        "circulating_supply": token.get("circSupply"),
+        "first_pool": mapping(token.get("firstPool")),
+        "audit": mapping(token.get("audit")),
+        "activity": {
+            interval: mapping(token.get("stats%s" % interval))
+            for interval in JUPITER_INTERVALS
+        },
+        "updated_at": token.get("updatedAt"),
+        "price_block_id": token.get("priceBlockId"),
     }
 
 
@@ -167,10 +206,80 @@ def snapshot(token) -> ProviderSnapshot:
     }
     activity = {}
     for interval in ("5m", "1h", "6h", "24h"):
-        stats = mapping(token.get(f"stats{interval}"))
+        stats = mapping(token.get("stats%s" % interval))
         activity[interval] = ActivitySnapshot(
             {key: metric(value, "jupiter") for key, value in stats.items()},
             number(stats.get("buyVolume")),
             number(stats.get("sellVolume")),
         )
     return ProviderSnapshot("jupiter", market, risk, activity)
+
+
+def social_links(token) -> list[dict[str, Any]]:
+    """Collect project links for shared validation and scoring."""
+
+    return [
+        {
+            "url": token.get(field),
+            "kind": "website" if field == "website" else "social",
+            "source": "jupiter",
+        }
+        for field in (
+            "website",
+            "twitter",
+            "telegram",
+            "discord",
+            "instagram",
+            "tiktok",
+        )
+        if token.get(field)
+    ]
+
+
+def discovery_request(
+    mode, query, interval, limit
+) -> tuple[str, dict[str, Any]]:
+    """Validate feed-specific options before constructing a request."""
+
+    if mode == "search":
+        if not isinstance(query, str) or not query.strip():
+            raise ValueError("Jupiter search requires a nonempty query")
+        if interval is not None or limit is not None:
+            raise ValueError("--interval and --limit require a ranked feed")
+        mint_queries(query)
+        return "search", {"query": query.strip()}
+    if query is not None:
+        raise ValueError("A query cannot be combined with a Jupiter feed")
+    if mode == "recent":
+        if interval is not None or limit is not None:
+            raise ValueError("--interval and --limit require a ranked feed")
+        return "recent", {}
+    if mode not in JUPITER_CATEGORIES:
+        raise ValueError("Unsupported Jupiter discovery mode")
+    interval = interval or "24h"
+    limit = 50 if limit is None else limit
+    if interval not in JUPITER_INTERVALS:
+        raise ValueError("Unsupported Jupiter interval")
+    if type(limit) is not int or not 1 <= limit <= 100:
+        raise ValueError("Jupiter --limit must be between 1 and 100")
+    return "%s/%s" % (mode, interval), {"limit": limit}
+
+
+def mint_queries(query) -> set[str] | None:
+    """Distinguish exact mint queries from names and symbols."""
+
+    if query is None:
+        return None
+    parts = [part.strip() for part in query.split(",")]
+    if len(parts) > 100:
+        raise ValueError("Jupiter search accepts at most 100 mint addresses")
+    try:
+        for part in parts:
+            Pubkey.from_string(part)
+    except ValueError:
+        if len(parts) > 1:
+            raise ValueError(
+                "Comma-separated queries must be mint addresses"
+            ) from None
+        return None
+    return set(parts)

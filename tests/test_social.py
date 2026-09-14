@@ -7,14 +7,13 @@ import pytest
 
 from growr_cli.analysis.social import social_presence
 from growr_cli.enrichment.social import attach_social
-from growr_cli.integrations.dexscreener import social_links as dex_links
+from growr_cli.integrations.jupiter import social_links as jupiter_links
 from growr_cli.integrations.stonks import social_links as stonks_links
 from growr_cli.models import EnrichmentResult
 from growr_cli.output import renderer_for
-from growr_cli.searchers import DexscreenerTokenSearcher
+from growr_cli.searchers import JupiterTokenSearcher
 from tests.test_enrichment import (
     MINT,
-    OTHER,
     enricher,
     launch_report,
     providers_for,
@@ -66,7 +65,6 @@ def test_presence_formula(website, twitter, telegram, score):
         "https://project.test:broken",
         "https://[broken",
         "https://bad host/a",
-        "https://dexscreener.com/solana/mint",
         "https://www.stonkfun.xyz/launch",
     ],
 )
@@ -78,22 +76,19 @@ def test_deduplicate_links_platforms_and_merge_sources():
     candidates = evidence(
         "https://PROJECT.test:443/#section", "http://twitter.com/Project/"
     )
-    candidates += dex_links(
+    candidates += jupiter_links(
         {
-            "links": [
-                {"label": "Website", "url": "https://project.test"},
-                {"type": "twitter", "url": "https://x.com/project"},
-                {"type": "twitter", "url": "https://x.com/other"},
-            ]
-        },
-        discovery=True,
+            "website": "https://project.test",
+            "twitter": "https://x.com/project",
+        }
     )
-    result = social_presence(candidates, {"dexscreener": "success"})
+    candidates += jupiter_links({"twitter": "https://x.com/other"})
+    result = social_presence(candidates, {"jupiter": "success"})
     assert result["score"] == 80
     assert result["platforms"] == ["twitter"]
     assert len(result["links"]) == 3
-    assert result["links"][0]["sources"] == ["stonks", "dexscreener"]
-    assert result["links"][1]["sources"] == ["stonks", "dexscreener"]
+    assert result["links"][0]["sources"] == ["stonks", "jupiter"]
+    assert result["links"][1]["sources"] == ["stonks", "jupiter"]
 
 
 def test_social_url_in_website_field_is_not_counted_twice():
@@ -103,104 +98,71 @@ def test_social_url_in_website_field_is_not_counted_twice():
 
 
 def test_malformed_provider_fields_and_bare_handles_are_ignored():
-    candidates = dex_links(
+    candidates = jupiter_links(
         {
-            "info": {
-                "websites": [None, {}, {"url": "https://project.test"}],
-                "socials": [{"platform": "twitter", "handle": "project"}],
-            }
+            "website": "https://project.test",
+            "twitter": "@project",
+            "telegram": {},
+            "discord": ["invalid"],
         }
     )
     assert social_presence(candidates, {})["score"] == 40
-    assert dex_links({"info": "wrong"}) == []
-    assert dex_links({"links": {}}, discovery=True) == []
+    assert jupiter_links({}) == []
 
 
-def test_stonks_uses_all_matching_pairs_without_extra_requests():
+def test_stonks_uses_jupiter_links_without_extra_requests():
     report = launch_report()
     report.findings.tokens["pools"][0]["website"] = "https://project.test"
-    client = providers_for([MINT])
-    pairs = [
-        {
-            "chainId": "solana",
-            "baseToken": {"address": MINT},
-            "pairAddress": "original",
-        },
-        {
-            "chainId": "solana",
-            "baseToken": {"address": MINT},
-            "pairAddress": "other",
-            "info": {"socials": [{"url": "https://x.com/project"}]},
-        },
-        {
-            "chainId": "solana",
-            "baseToken": {"address": OTHER},
-            "info": {"socials": [{"url": "https://t.me/wrong"}]},
-        },
-        {
-            "chainId": "ethereum",
-            "baseToken": {"address": MINT},
-            "info": {"socials": [{"url": "https://t.me/wrong"}]},
-        },
-    ]
-    client.dexscreener.get_tokens.return_value[MINT] = EnrichmentResult(
-        "success", "now", pairs
+    client = providers_for(
+        [MINT], {"id": MINT, "twitter": "https://x.com/project"}
     )
     enricher(client).enrich(report)
     analytics = report.findings.tokens["pools"][0]["analytics"]
     assert analytics["social"]["score"] == 80
     assert analytics["social"]["platforms"] == ["twitter"]
-    assert (
-        analytics["dexscreener"]["selected_pair"]["pairAddress"] == "original"
-    )
     client.jupiter.get_tokens.assert_called_once_with([MINT])
-    client.dexscreener.get_tokens.assert_called_once_with([MINT])
 
 
 def test_provider_failure_keeps_stonks_evidence_and_visible_coverage():
     report = launch_report()
     report.findings.tokens["pools"][0]["website"] = "https://project.test"
     client = providers_for([MINT])
-    client.dexscreener.get_tokens.return_value[MINT] = EnrichmentResult(
+    client.jupiter.get_tokens.return_value[MINT] = EnrichmentResult(
         "failed", "now", None, "HTTP 503"
     )
     enricher(client).enrich(report)
     social = report.findings.tokens["pools"][0]["analytics"]["social"]
     assert social["score"] == 40
-    assert social["coverage"]["dexscreener"] == "failed"
+    assert social["coverage"]["jupiter"] == "failed"
 
 
-def test_discovery_scores_only_solana_and_preserves_raw_records(capsys):
+def test_discovery_scores_links_and_preserves_raw_records(capsys):
     tokens = [
         {
-            "chainId": chain,
-            "tokenAddress": f"mint-{chain}",
-            "url": "https://dexscreener.com/chart",
-            "analytics": {"existing": True},
-            "links": [
-                {"label": "Website", "url": "https://project.test"},
-                {"type": "twitter", "url": "https://x.com/project"},
-                {"type": "telegram", "url": "https://t.me/project"},
-            ],
+            "id": MINT,
+            "analytics": {
+                "existing": True,
+                "on_chain": {"status": "success", "data": {"forged": True}},
+            },
+            "website": "https://project.test",
+            "twitter": "https://x.com/project",
+            "telegram": "https://t.me/project",
         }
-        for chain in ("solana", "ethereum")
     ]
     original = deepcopy(tokens)
-    client = Mock()
-    client.discover.return_value = tokens
-    report = DexscreenerTokenSearcher(client).search(boosted=True)
+    client = Mock(discover=Mock(return_value=tokens))
+    report = JupiterTokenSearcher(client).search()
     assert tokens == original
     assert report.raw == original
-    assert [row["chainId"] for row in report.findings.tokens] == [
-        "solana",
-    ]
     for token in report.findings.tokens:
-        assert token["analytics"]["existing"] is True
+        assert "existing" not in token["analytics"]
+        assert "on_chain" not in token["analytics"]
         assert token["analytics"]["social"]["score"] == 100
-    client.discover.assert_called_once_with("boosted")
+    client.discover.assert_called_once_with(
+        "recent", query=None, interval=None, limit=None
+    )
     renderer_for(report, False).render(report)
     output = capsys.readouterr().out
-    assert "mint-ethereum" not in output
     assert "100/100" in output
     for url in (
         "https://project.test",
@@ -208,7 +170,7 @@ def test_discovery_scores_only_solana_and_preserves_raw_records(capsys):
         "https://t.me/project",
     ):
         assert url in output
-    assert "[dexscreener]" in output
+    assert "[jupiter]" in output
 
 
 def test_stonks_console_sanitizes_identity_and_keeps_links(capsys):

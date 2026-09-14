@@ -11,6 +11,7 @@ from growr_cli.models import (
     ScanReport,
 )
 from growr_cli.scanners.base import BaseScanner
+from growr_cli.solana.inventory import token_account_entries
 from growr_cli.solana.rpc import (
     SPL_TOKEN_PROGRAM_ID,
     TOKEN_2022_PROGRAM_ID,
@@ -33,7 +34,7 @@ class WalletScanner(BaseScanner):
         super().__init__(rpc, rpc_label)
 
     def scan(self, wallet_text) -> ScanReport:
-        """Scan wallet balance, activity, and account counts.
+        """Scan wallet balance, activity, and token-account holdings.
 
         Args:
             wallet_text: Wallet address.
@@ -68,11 +69,22 @@ class WalletScanner(BaseScanner):
         report.summary["sol_balance"] = sol_balance
         report.summary["recent_signature_count"] = len(signatures)
         report.summary["token_accounts"] = self._token_account_summary(
+            wallet,
             spl_accounts,
             spl_error,
             token_2022_accounts,
             token_2022_error,
         )
+        unparsed = report.summary["token_accounts"]["unparsed_account_count"]
+        if unparsed:
+            report.findings.append(
+                Finding(
+                    "medium",
+                    "Token-account entries incomplete",
+                    "%s returned entries could not be validated." % unparsed,
+                    "on-chain RPC",
+                )
+            )
 
         if sol_balance == 0:
             report.findings.append(
@@ -114,11 +126,22 @@ class WalletScanner(BaseScanner):
 
     def _token_account_summary(
         self,
+        wallet,
         spl_accounts,
         spl_error,
         token_2022_accounts,
         token_2022_error,
     ) -> dict[str, Any]:
+        """Keep returned counts alongside validated holdings."""
+
+        # SPL accounts precede Token-2022 accounts, retaining RPC order
+        # within each program regardless of request completion order.
+        spl_entries, spl_unparsed = token_account_entries(
+            spl_accounts or [], wallet, SPL_TOKEN_PROGRAM_ID
+        )
+        token_2022_entries, token_2022_unparsed = token_account_entries(
+            token_2022_accounts or [], wallet, TOKEN_2022_PROGRAM_ID
+        )
         spl_count = len(spl_accounts) if spl_accounts is not None else None
         token_2022_count = (
             len(token_2022_accounts)
@@ -134,8 +157,11 @@ class WalletScanner(BaseScanner):
             "spl_token_account_count": spl_count,
             "token_2022_account_count": token_2022_count,
             "total_account_count": sum(counted) if counted else None,
-            "note": "This is a shallow inventory. No recursive wallet graph "
-            "nonsense here.",
+            "entries": spl_entries + token_2022_entries,
+            "unparsed_account_count": spl_unparsed + token_2022_unparsed,
+            "note": "Counts describe returned accounts. Entries contain "
+            "validated holdings; balances are raw base units, not "
+            "adjusted for mint decimals.",
         }
         if spl_error:
             summary["spl_token_error"] = spl_error

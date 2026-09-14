@@ -136,7 +136,7 @@ def test_enrichment_summarizes_batches_without_per_pool_logs(
     configure_console_logging(enabled=True, use_color=False)
     mints = [MINT, OTHER] if pool_count > 1 else [MINT]
     launches = [
-        {"mint": mints[index % len(mints)], "pool": f"pool-{index}"}
+        {"mint": mints[index % len(mints)], "pool": "pool-%s" % index}
         for index in range(pool_count)
     ]
 
@@ -149,7 +149,7 @@ def test_enrichment_summarizes_batches_without_per_pool_logs(
     enricher(providers_for(mints), scan).enrich(launch_report(launches))
 
     output = capsys.readouterr().err
-    assert len(output.splitlines()) == 8
+    assert len(output.splitlines()) == 6
     assert output.count("RPC coverage:") == 1
     assert "Individual scan details" not in output
     assert "secret" not in output
@@ -184,5 +184,5 @@ def test_quiet_failure_still_reports_error_without_completion(
 
     output = capsys.readouterr()
     assert json.loads(output.out)["error"]["code"] == "EXECUTION_FAILED"
-    assert "ERROR Scan failed" in output.err
+    assert "ERROR Run failed" in output.err
     assert "Run complete" not in output.err

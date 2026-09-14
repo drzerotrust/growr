@@ -31,11 +31,8 @@ from growr_cli import settings
 from growr_cli.configuration import log_configuration
 from growr_cli.enrichment.launches import LaunchEnricher
 from growr_cli.enrichment.on_chain import OnChainEnricher
-from growr_cli.enrichment.token_context import TokenContext
-from growr_cli.integrations.dexscreener import DexscreenerClient
 from growr_cli.integrations.http import HttpClient
 from growr_cli.integrations.jupiter import JupiterClient
-from growr_cli.integrations.rugcheck import RugcheckClient
 from growr_cli.integrations.stonks import StonksClient
 from growr_cli.machine.response import Run, build_response, serialize
 from growr_cli.machine.schema import response_schema
@@ -90,14 +87,11 @@ def arguments(*command):
     return args
 
 
-def token_scan(http, mint, market=False):
+def token_scan(http, mint, market=False, stonk=False):
     """Own RPC resources and optional direct-token providers."""
 
-    context = TokenContext(
-        JupiterClient(http, settings.JUPITER_API_KEY),
-        DexscreenerClient(http),
-        RugcheckClient(http),
-    )
+    flags = ["--stonk"] if stonk else []
+    context = growr._token_context(arguments("token", mint, *flags), http)
     with closing(SolanaRpcClient(settings.RPC_URL, 10)) as rpc:
         return TokenScanner(rpc, settings.RPC_LABEL, context).scan(
             mint, market, market, include_market_context=market
@@ -193,13 +187,12 @@ def stonks_listing(http):
     envelope["pools"] = envelope["pools"][:1]
     return LaunchEnricher(
         JupiterClient(http, settings.JUPITER_API_KEY),
-        DexscreenerClient(http),
         lambda mint: token_scan(http, mint),
     ).enrich(report)
 
 
 def check_listings(results, http) -> None:
-    """Verify one Stonks pool and one Dexscreener Solana result."""
+    """Verify one Stonks pool and one Jupiter result."""
 
     args = arguments(
         "list",
@@ -213,12 +206,12 @@ def check_listings(results, http) -> None:
     record_check(
         results, "stonks-on-chain", args, lambda: stonks_listing(http)
     )
-    args = arguments("list", "dexscreener")
+    args = arguments("list", "jupiter")
     report = record_check(
         results,
-        "dexscreener",
+        "jupiter",
         args,
-        lambda: growr._search_tokens(
+        lambda: growr._list_tokens(
             args, settings.RPC_URL, settings.RPC_LABEL, http
         ),
     )
@@ -226,15 +219,13 @@ def check_listings(results, http) -> None:
         [
             item
             for item in report.findings.tokens
-            if item.get("chainId") == "solana"
+            if isinstance(item.get("id"), str)
         ]
         if report
         else []
     )
     if not eligible:
-        results.append(
-            {"check": "dexscreener-on-chain", "status": "unverified"}
-        )
+        results.append({"check": "jupiter-on-chain", "status": "unverified"})
         return
     # Limit verification in this harness without changing the CLI feed.
     report = deepcopy(report)
@@ -242,7 +233,7 @@ def check_listings(results, http) -> None:
     args.on_chain = True
     record_check(
         results,
-        "dexscreener-on-chain",
+        "jupiter-on-chain",
         args,
         lambda: OnChainEnricher(lambda mint: token_scan(http, mint)).enrich(
             report
@@ -263,12 +254,18 @@ def main() -> int:
         help="Check the mint and returned owner/account only.",
     )
     parser.add_argument(
+        "--stonk",
+        action="store_true",
+        help="Use Stonkfun context for the direct token check.",
+    )
+    parser.add_argument(
         "--max-requests",
         type=int,
         default=30,
         help="Lower the request cap (1 through 30).",
     )
     options = parser.parse_args()
+    flags = ["--stonk"] if options.stonk else []
     if not 1 <= options.max_requests <= 30:
         parser.error("--max-requests must be between 1 and 30")
     growr._validate_target(parser, arguments("token", options.mint))
@@ -317,8 +314,8 @@ def main() -> int:
         ):
             report, outcome = check(
                 "token",
-                arguments("token", options.mint),
-                lambda: token_scan(http, options.mint, True),
+                arguments("token", options.mint, *flags),
+                lambda: token_scan(http, options.mint, True, options.stonk),
             )
             results.append(outcome)
             check_related_accounts(results, report)

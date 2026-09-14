@@ -16,7 +16,7 @@ LOGGER = get_logger(__name__)
 
 
 class TokenAccountScanner(BaseScanner):
-    """Scan an SPL token account, its mint, and its owner."""
+    """Read an SPL Token or Token-2022 account and owner context."""
 
     def __init__(self, rpc, rpc_label) -> None:
         """Create a token-account scanner.
@@ -29,7 +29,7 @@ class TokenAccountScanner(BaseScanner):
         super().__init__(rpc, rpc_label)
 
     def scan(self, token_account_text) -> ScanReport:
-        """Scan one SPL token account.
+        """Scan one SPL Token or Token-2022 holding account.
 
         Args:
             token_account_text: Token-account address.
@@ -56,8 +56,10 @@ class TokenAccountScanner(BaseScanner):
             Finding(
                 "high" if account["state"] == "frozen" else "info",
                 "Token account state",
-                f"Account is {account['state']} and holds "
-                f"{account['raw_amount']} raw token units.",
+                (
+                    "Account is %s and holds %s raw token units."
+                    % (account["state"], account["raw_amount"])
+                ),
                 "on-chain RPC",
             )
         )

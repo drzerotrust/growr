@@ -84,7 +84,7 @@ def test_parse_mint_rejects_short_buffer() -> None:
     try:
         parse_mint(b"\x00" * 10, str(SPL_TOKEN_PROGRAM_ID))
     except ValueError as error:
-        assert "shorter than the SPL Token mint layout" in str(error)
+        assert "expected at least 82 bytes, got 10" in str(error)
     else:
         raise AssertionError("expected ValueError")
 

@@ -48,6 +48,8 @@ select = [
     "D205",
     "W505",
 ]
+# String interpolation uses percent placeholders by project convention.
+ignore = ["UP031", "UP032"]
 
 [tool.ruff.lint.pycodestyle]
 max-doc-length = 72

@@ -21,18 +21,18 @@ PLATFORM_HOSTS = {
     "linkedin.com": "linkedin",
     "github.com": "github",
 }
-PROVIDER_HOSTS = {"stonkfun.xyz", "dexscreener.com"}
+PROVIDER_HOSTS = {"stonkfun.xyz"}
 
 
 def _matches_host(host, domain) -> bool:
-    return host == domain or host.endswith(f".{domain}")
+    return host == domain or host.endswith(".%s" % domain)
 
 
 def _ascii_host(host) -> str:
     """Normalize DNS names and retain required IPv6 brackets."""
 
     if ":" in host:
-        return f"[{IPv6Address(host)}]"
+        return "[%s]" % IPv6Address(host)
     host = host.encode("idna").decode("ascii").lower().rstrip(".")
     labels = host.split(".")
     if len(host) > 253 or any(
@@ -100,7 +100,7 @@ def normalize_link(candidate) -> dict[str, Any] | None:
         ("http", 80),
         ("https", 443),
     }:
-        host = f"{host}:{port}"
+        host = "%s:%s" % (host, port)
     # Encode Unicode and unsafe URI characters without changing valid
     # escapes or the meaning of query separators.
     path = quote(path, safe="/:@!$&'()*+,;=-._~%")

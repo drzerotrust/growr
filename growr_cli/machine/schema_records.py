@@ -19,6 +19,30 @@ def fields(properties) -> dict[str, Any]:
     }
 
 
+def wallet_inventory() -> dict[str, Any]:
+    """Describe returned counts and individually validated accounts."""
+
+    entry = fields(
+        {
+            "address": {"type": "string"},
+            "mint": {"type": "string"},
+            "token_program": {"enum": ["spl_token", "token_2022"]},
+            "raw_amount": RAW_AMOUNT,
+            "state": {"enum": ["uninitialized", "initialized", "frozen"]},
+        }
+    )
+    entry["required"] = list(entry["properties"])
+    return fields(
+        {
+            "spl_token_account_count": COUNT,
+            "token_2022_account_count": COUNT,
+            "total_account_count": COUNT,
+            "unparsed_account_count": {"type": "integer", "minimum": 0},
+            "entries": {"type": "array", "items": entry},
+        }
+    )
+
+
 def fact_schemas() -> dict[str, Any]:
     """Describe the observations available for each record kind."""
 
@@ -79,16 +103,7 @@ def fact_schemas() -> dict[str, Any]:
         {
             "sol_balance": NUMBER,
             "recent_signature_count": COUNT,
-            "token_accounts": fields(
-                dict.fromkeys(
-                    (
-                        "spl_token_account_count",
-                        "token_2022_account_count",
-                        "total_account_count",
-                    ),
-                    COUNT,
-                )
-            ),
+            "token_accounts": wallet_inventory(),
         }
     )
     return {

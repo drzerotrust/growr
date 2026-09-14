@@ -20,9 +20,10 @@ COMMANDS = [
     (["token-account", OTHER], "token_account", True),
     (["list", "stonks"], "pool", False),
     (["list", "--stonk", "--on-chain"], "pool", True),
-    (["list", "dexscreener"], "token_discovery", False),
-    (["list", "dexcreener", "--on-chain"], "token_discovery", True),
-    (["list", "--community-takeovers"], "token_discovery", False),
+    (["list", "jupiter"], "token_discovery", False),
+    (["list", "jupiter", "--on-chain"], "token_discovery", True),
+    (["search", "jupiter", "JUP"], "token_discovery", False),
+    (["search", "stonks", "te"], "pool", False),
 ]
 OUTPUT_OPTIONS = [
     [],
@@ -37,29 +38,17 @@ OUTPUT_OPTIONS = [
 
 
 def provider_response(url, **options):
-    pair = {
-        "chainId": "solana",
-        "pairAddress": OTHER,
-        "baseToken": {"address": MINT},
-        "priceUsd": "1.5",
-        "liquidity": {"usd": 1000},
-    }
-
     if url.startswith(settings.STONKS_API_URL):
-        data = {"pools": [{"mint": MINT, "symbol": "GROWR"}]}
+        data = {
+            "data": {"tokens": [{"mint": MINT, "symbol": "GROWR"}]},
+            "meta": {},
+        }
     elif url.startswith(settings.JUPITER_API_URL):
         data = [{"id": MINT, "usdPrice": 1.5}]
     elif url.startswith(settings.RUGCHECK_API_URL):
         data = {"score": 0, "risks": []}
-    elif "/tokens/v1/solana/" in url:
-        data = [pair]
-    elif "/latest/dex/tokens/" in url:
-        data = {"pairs": [pair]}
     else:
-        assert url.endswith(
-            ("/token-boosts/latest/v1", "/community-takeovers/latest/v1")
-        )
-        data = [{"chainId": "solana", "tokenAddress": MINT}]
+        raise AssertionError("Unexpected provider URL: %s" % url)
     return Mock(ok=True, json=Mock(return_value=data))
 
 
@@ -68,14 +57,14 @@ def offline_io(monkeypatch):
     # Keep parsing, integrations, scanners and rendering real. Replace
     # only network boundaries so options must reach their consumers.
     for name in (
-        "DEXSCREENER_API_URL",
-        "DEXSCREENER_V1_API_URL",
         "JUPITER_API_URL",
         "STONKS_API_URL",
         "RUGCHECK_API_URL",
     ):
         monkeypatch.setattr(
-            settings, name, getattr(settings, f"DEFAULT_{name}").rstrip("/")
+            settings,
+            name,
+            getattr(settings, "DEFAULT_%s" % name).rstrip("/"),
         )
     monkeypatch.setattr(settings, "JUPITER_API_KEY", "synthetic-review-key")
     monkeypatch.setattr(settings, "REQUEST_TIMEOUT_SECONDS", 5)
@@ -138,7 +127,7 @@ def test_command_output_options(
         assert report["request"]["rpc"] == (
             "CLI --rpc-url override" if uses_rpc else None
         )
-        if kind == "pool":
+        if kind == "pool" and command[0] == "list":
             assert report["request"]["options"]["mode"] == "recent"
 
     _, rpc_factory, clients = offline_io
@@ -177,13 +166,13 @@ def test_token_provider_flags_control_requests_and_coverage(
     report = validate(json.loads(output.out))
     assert report["status"] == "success"
     record = report["records"][0]
+    assert (record["social"] is None) == skip_jupiter
     coverage = {item["source"]: item["status"] for item in record["coverage"]}
     http_get, _, _ = offline_io
     urls = [call.args[0] for call in http_get.call_args_list]
     for source, base, skipped in (
         ("jupiter", settings.JUPITER_API_URL, skip_jupiter),
         ("rugcheck", settings.RUGCHECK_API_URL, skip_rugcheck),
-        ("dexscreener", settings.DEXSCREENER_API_URL, False),
     ):
         requests = sum(url.startswith(base) for url in urls)
         assert requests == (0 if skipped else 1)
@@ -192,24 +181,112 @@ def test_token_provider_flags_control_requests_and_coverage(
 
 
 @pytest.mark.parametrize("json_mode", [False, True])
+def test_token_jupiter_metrics_and_links_stay_separate_from_rpc(
+    monkeypatch, capsys, offline_io, json_mode
+):
+    payload = {
+        "id": MINT,
+        "usdPrice": 0,
+        "liquidity": 120,
+        "organicScore": 0,
+        "audit": {"mintAuthorityDisabled": False},
+        "stats5m": {"buyVolume": 10, "sellVolume": 0},
+        "firstPool": {"id": OTHER},
+        "website": "https://project.example",
+        "twitter": "https://x.com/project",
+        "telegram": "https://t.me/project",
+        "extra": "raw-only",
+    }
+
+    def get(url, **options):
+        if url.startswith(settings.JUPITER_API_URL):
+            return Mock(ok=True, json=Mock(return_value=[payload]))
+        return provider_response(url, **options)
+
+    http_get, _, _ = offline_io
+    http_get.side_effect = get
+    flags = ["--json", "--include-raw"] if json_mode else []
+    monkeypatch.setattr("sys.argv", ["growr.py", *flags, "token", MINT])
+    assert growr.main() == 0
+    output = capsys.readouterr()
+    assert output.err == ""
+    assert http_get.call_count == 2
+    if not json_mode:
+        assert "Jupiter reported audit" in output.out
+        assert "Jupiter trading activity" in output.out
+        assert "100/100" in output.out
+        assert "https://project.example" in output.out
+        assert "raw-only" not in output.out
+        return
+
+    record = validate(json.loads(output.out))["records"][0]
+    assert record["facts"]["source"] == "rpc"
+    assert not {"jupiter", "market", "social"} & record["facts"].keys()
+    metrics = record["metrics"]["jupiter"]
+    assert metrics["source"] == "jupiter" and metrics["scope"] == "token"
+    assert metrics["values"]["price_usd"] == 0
+    assert metrics["values"]["liquidity"] == 120
+    assert metrics["values"]["audit"] == payload["audit"]
+    assert metrics["values"]["activity"]["5m"] == payload["stats5m"]
+    assert metrics["values"]["first_pool"] == {"id": OTHER}
+    assert record["social"]["score"] == 100
+    assert all(
+        link["sources"] == ["jupiter"] for link in record["social"]["links"]
+    )
+    assert record["raw"]["jupiter"] == payload
+
+
+@pytest.mark.parametrize("outcome", ["missing_key", "failed", "no_data"])
+def test_jupiter_gaps_preserve_direct_rpc_report(
+    monkeypatch, capsys, offline_io, outcome
+):
+    http_get, _, _ = offline_io
+
+    def get(url, **options):
+        if url.startswith(settings.JUPITER_API_URL):
+            return Mock(
+                ok=outcome != "failed",
+                status_code=503,
+                json=Mock(return_value=[]),
+            )
+        return provider_response(url, **options)
+
+    http_get.side_effect = get
+    if outcome == "missing_key":
+        monkeypatch.setattr(settings, "JUPITER_API_KEY", None)
+    monkeypatch.setattr("sys.argv", ["growr.py", "--json", "token", MINT])
+    assert growr.main() == 0
+    document = validate(json.loads(capsys.readouterr().out))
+    assert document["status"] == (
+        "success" if outcome == "no_data" else "partial"
+    )
+    record = document["records"][0]
+    assert record["facts"]["mint"]["supply"] == "1000"
+    assert record["social"]["score"] == 0
+    expected = "not_configured" if outcome == "missing_key" else outcome
+    assert record["social"]["coverage"] == {"jupiter": expected}
+    assert http_get.call_count == (1 if outcome == "missing_key" else 2)
+
+
+@pytest.mark.parametrize("json_mode", [False, True])
 @pytest.mark.parametrize(
     ("options", "message"),
     [
         (
-            ["--stonk", "--boosted"],
-            "Dexscreener feed options cannot select Stonks",
+            ["stonks", "--query", "JUP"],
+            "unrecognized arguments: --query JUP",
         ),
         (
-            ["--stonk", "--community-takeovers"],
-            "Dexscreener feed options cannot select Stonks",
+            ["jupiter", "--stonk"],
+            "--stonk conflicts with the Jupiter provider",
         ),
         (
-            ["dexscreener", "--stonk-search", "recent"],
+            ["jupiter", "--stonk-search", "recent"],
             "--stonk-search requires list stonks",
         ),
         (
-            ["--boosted", "--stonk-search", "recent"],
-            "--stonk-search requires list stonks",
+            ["stonks", "--jupiter-search", "recent"],
+            "Jupiter search options require list jupiter",
         ),
     ],
 )
@@ -249,8 +326,12 @@ def test_provider_conflicts_fail_before_network(
         ["token-account"],
         ["list"],
         ["list", "stonks"],
-        ["list", "dexscreener"],
-        ["list", "dexcreener"],
+        ["list", "jupiter"],
+        ["search"],
+        ["search", "jupiter"],
+        ["search", "jupiter", "JUP"],
+        ["search", "stonks"],
+        ["search", "stonks", "te"],
     ],
 )
 def test_every_help_route_is_offline_with_examples(
@@ -271,6 +352,40 @@ def test_every_help_route_is_offline_with_examples(
     output = capsys.readouterr()
     assert "usage:" in output.out
     assert "Examples:" in output.out
+    assert "growr.py scan " not in output.out
+    assert "alias: scan" not in output.out
     assert output.err == ""
+    http.assert_not_called()
+    rpc.assert_not_called()
+
+
+@pytest.mark.parametrize("json_mode", [False, True])
+@pytest.mark.parametrize("options", [[MINT], [MINT, "--stonk"], ["--help"]])
+def test_removed_scan_command_fails_before_network(
+    monkeypatch, capsys, json_mode, options
+):
+    flags = ["--json"] if json_mode else []
+    monkeypatch.setattr("sys.argv", ["growr.py", *flags, "scan", *options])
+    http = Mock()
+    rpc = Mock()
+    monkeypatch.setattr(growr, "HttpClient", http)
+    monkeypatch.setattr(growr, "SolanaRpcClient", rpc)
+
+    if json_mode:
+        assert growr.main() == 2
+    else:
+        with pytest.raises(SystemExit) as error:
+            growr.main()
+        assert error.value.code == 2
+
+    output = capsys.readouterr()
+    if json_mode:
+        report = validate(json.loads(output.out))
+        assert report["error"]["code"] == "INVALID_ARGUMENTS"
+        assert output.err == ""
+    else:
+        assert "invalid choice: 'scan'" in output.err
+        assert "'token'" in output.err
+        assert output.out == ""
     http.assert_not_called()
     rpc.assert_not_called()

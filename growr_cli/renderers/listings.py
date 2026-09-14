@@ -1,4 +1,4 @@
-"""Common list rendering and the Dexscreener search listing."""
+"""Shared listing presentation and evidence formatting."""
 
 from __future__ import annotations
 
@@ -27,18 +27,18 @@ class ListConsoleRenderer(BaseConsoleRenderer):
         value = number(data.get("value"))
         if value is None:
             return "—"
+        # Percent placeholders do not support comma grouping.
         formatted = (
-            f"{value:.6g}"
+            "%.6g" % value
             if price
-            else f"{value:,.2f}".rstrip("0").rstrip(".")
+            else format(value, ",.2f").rstrip("0").rstrip(".")
         )
         source = {
             "jupiter": "J",
-            "dexscreener": "D",
             "stonks": "S",
             "rpc": "R",
         }.get(str(data.get("source")), "?")
-        return f"{formatted}{suffix} {source}"
+        return "%s%s %s" % (formatted, suffix, source)
 
     def _social_rows(self, identity, record) -> list[list[str]]:
         """Show every link, with continuation rows and source labels."""
@@ -48,13 +48,13 @@ class ListConsoleRenderer(BaseConsoleRenderer):
         socials = []
         for link in social.get("links", []):
             sources = ", ".join(link["sources"])
-            text = terminal_text(f"{link['url']} [{sources}]")
+            text = terminal_text("%s [%s]" % (link["url"], sources))
             if link["kind"] == "website":
                 websites.append(text)
             else:
                 socials.append(text)
         score = social.get("score")
-        score_text = f"{score}/100" if score is not None else "—"
+        score_text = "%s/100" % score if score is not None else "—"
         rows = []
         for index, (website, account) in enumerate(
             zip_longest(websites or ["—"], socials or ["—"], fillvalue="")
@@ -101,59 +101,3 @@ class ListConsoleRenderer(BaseConsoleRenderer):
         if key not in data:
             return "—"
         return "enabled R" if data[key] else "disabled R"
-
-
-class DexscreenerConsoleRenderer(ListConsoleRenderer):
-    """Render discovery identity and social presence as a table."""
-
-    def _render_listing(self, report) -> None:
-        tokens = report.findings.tokens
-        self._heading(
-            f"Dexscreener {report.search_type} | {len(tokens)} results"
-        )
-        rows = []
-        for token in tokens:
-            rows.extend(
-                self._social_rows(
-                    [
-                        token.get("chainId", "—"),
-                        token.get("tokenAddress", "—"),
-                    ],
-                    token,
-                )
-            )
-        self._table(
-            ["Chain", "Token", "Social", "Website", "Social links"], rows
-        )
-        self._social_note()
-        self._render_rpc(tokens)
-
-    def _render_rpc(self, tokens) -> None:
-        """Show optional observations and coverage gaps."""
-
-        rows = []
-        for token in tokens:
-            result = mapping(token.get("analytics")).get("on_chain")
-            if result is None:
-                continue
-            label = terminal_text(token.get("tokenAddress") or "—")
-            rows.append(
-                [
-                    *self._rpc_row(label, result),
-                    terminal_text(result["status"]),
-                    terminal_text(result.get("detail") or ""),
-                ]
-            )
-        if rows:
-            self._heading("On-chain observations")
-            self._table(
-                [
-                    "Token",
-                    "Mint auth",
-                    "Freeze auth",
-                    "Largest accounts",
-                    "Status",
-                    "Detail",
-                ],
-                rows,
-            )

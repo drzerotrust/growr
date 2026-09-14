@@ -37,11 +37,11 @@ class ConsoleFormatter(logging.Formatter):
         level = record.levelname
         if self.use_color and sys.stderr.isatty():
             color = self.COLORS.get(record.levelno, "")
-            level = f"{color}{level}\033[0m"
+            level = "%s%s\033[0m" % (color, level)
 
         message = " ".join(safe_text(record.getMessage()).splitlines())
         message = "".join(char for char in message if char.isprintable())
-        return f"[+{elapsed:7.2f}s] {level} {message}"
+        return "[+%7.2fs] %s %s" % (elapsed, level, message)
 
 
 class ConsoleHandler(logging.Handler):
@@ -94,7 +94,7 @@ def get_logger(file_name) -> logging.Logger:
     name = (
         file_name
         if file_name.startswith("growr_cli.")
-        else f"growr_cli.{file_name}"
+        else "growr_cli.%s" % file_name
     )
     logger = logging.getLogger(name)
     logger.setLevel(logging.DEBUG)

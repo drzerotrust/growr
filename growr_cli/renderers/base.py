@@ -72,7 +72,10 @@ class BaseConsoleRenderer(ABC):
         print(self._color(text, "bold"))
 
     def _line(self, label, value, indent=2) -> None:
-        print(f"{' ' * indent}{self._label(label)}: {terminal_text(value)}")
+        print(
+            "%s%s: %s"
+            % (" " * indent, self._label(label), terminal_text(value))
+        )
 
     def _label(self, label) -> str:
         return terminal_text(label).replace("_", " ").title()
@@ -88,4 +91,4 @@ class BaseConsoleRenderer(ABC):
         text = terminal_text(text)
         if not self.use_color:
             return text
-        return f"{self.COLORS[color]}{text}{self.COLORS['reset']}"
+        return "%s%s%s" % (self.COLORS[color], text, self.COLORS["reset"])

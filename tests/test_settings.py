@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import importlib
 
+import pytest
+
 from growr_cli import settings
 
 SETTING_ENVIRONMENT_VARIABLES = (
@@ -16,9 +18,8 @@ SETTING_ENVIRONMENT_VARIABLES = (
     "HELIUS_MAINNET_RPC_URL",
     "REQUEST_TIMEOUT_SECONDS",
     "RUGCHECK_API_URL",
-    "DEXSCREENER_API_URL",
-    "DEXSCREENER_V1_API_URL",
     "STONKS_API_URL",
+    "STONKS_HOLDERS_API_URL",
     "JUPITER_API_URL",
 )
 
@@ -102,17 +103,30 @@ def test_process_environment_wins_over_dotenv(monkeypatch) -> None:
 def test_provider_api_urls_are_environment_settings(monkeypatch) -> None:
     configured_settings = _reload_settings(monkeypatch)
     monkeypatch.setenv("RUGCHECK_API_URL", "https://rugcheck.example/")
-    monkeypatch.setenv("DEXSCREENER_API_URL", "https://dexscreener.example/")
-    monkeypatch.setenv("DEXSCREENER_V1_API_URL", "https://dex-v1.example/")
     monkeypatch.setenv("JUPITER_API_URL", "https://jupiter.example/")
     configured_settings = importlib.reload(configured_settings)
 
     assert configured_settings.RUGCHECK_API_URL == "https://rugcheck.example"
-    assert (
-        configured_settings.DEXSCREENER_API_URL
-        == "https://dexscreener.example"
-    )
-    assert (
-        configured_settings.DEXSCREENER_V1_API_URL == "https://dex-v1.example"
-    )
     assert configured_settings.JUPITER_API_URL == "https://jupiter.example"
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [
+        (
+            "https://www.stonkfun.xyz/api/",
+            "https://www.stonkfun.xyz/api/public/v1",
+        ),
+        ("https://custom.example/api", "https://custom.example/api"),
+    ],
+)
+def test_stonks_upgrades_only_the_old_official_default(
+    monkeypatch, configured, expected
+):
+    configured_settings = _reload_settings(monkeypatch)
+    monkeypatch.setenv("STONKS_API_URL", configured)
+    configured_settings = importlib.reload(configured_settings)
+    assert expected == configured_settings.STONKS_API_URL
+    assert configured_settings.STONKS_HOLDERS_API_URL == (
+        "https://www.stonkfun.xyz/api/token-holders"
+    )

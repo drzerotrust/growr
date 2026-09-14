@@ -10,7 +10,6 @@ from jsonschema import FormatChecker
 import growr
 from growr_cli import settings
 from growr_cli.analysis.social import normalize_link, social_presence
-from growr_cli.integrations.dexscreener import DexscreenerClient
 from growr_cli.integrations.jupiter import JupiterClient
 from growr_cli.integrations.rugcheck import report_summary
 from growr_cli.logger import get_logger
@@ -83,22 +82,10 @@ def test_valid_empty_jupiter_matches_remain_no_data(payload):
     assert JupiterClient(http, "key").get_token(MINT).status == "no_data"
 
 
-@pytest.mark.parametrize("payload", [{"pairs": []}, {"pairs": None}])
-def test_valid_empty_dexscreener_responses_remain_no_data(payload):
-    http = Mock(get_json=Mock(return_value=(payload, None)))
-    assert DexscreenerClient(http).get_pairs(MINT).status == "no_data"
-
-
 @pytest.mark.parametrize("payload", [None, {}, [None], ["invalid"]])
 def test_bad_jupiter_records_fail_coverage(payload):
     http = Mock(get_json=Mock(return_value=(payload, None)))
     assert JupiterClient(http, "key").get_token(MINT).status == "failed"
-
-
-@pytest.mark.parametrize("pairs", [[None], ["invalid"], {}, 12])
-def test_bad_dexscreener_records_fail_coverage(pairs):
-    http = Mock(get_json=Mock(return_value=({"pairs": pairs}, None)))
-    assert DexscreenerClient(http).get_pairs(MINT).status == "failed"
 
 
 @pytest.mark.parametrize(
@@ -172,7 +159,9 @@ def test_private_values_stay_out_of_console_logs_and_json(
     monkeypatch.setattr(settings, "JUPITER_API_KEY", key)
     report = ScanReport("wallet", MINT, "test RPC", STAMP)
     report.summary = {"sol_balance": 1, "diagnostic": endpoint}
-    report.findings = [Finding("info", "Echo", f"{endpoint} {key}", "test")]
+    report.findings = [
+        Finding("info", "Echo", "%s %s" % (endpoint, key), "test")
+    ]
     report.provider_data = {"jupiter": {"data": {"key": key, "url": endpoint}}}
 
     def build(*args):

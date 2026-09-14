@@ -39,12 +39,13 @@ def safe_text(value) -> str:
         "HELIUS_MAINNET_RPC_URL",
         "JUPITER_API_URL",
         "STONKS_API_URL",
+        "STONKS_HOLDERS_API_URL",
         "RUGCHECK_API_URL",
-        "DEXSCREENER_API_URL",
-        "DEXSCREENER_V1_API_URL",
     ):
         configured = getattr(settings, name, None)
-        default = getattr(settings, f"DEFAULT_{name}", public_rpc).rstrip("/")
+        default = getattr(settings, "DEFAULT_%s" % name, public_rpc).rstrip(
+            "/"
+        )
         if configured and configured.rstrip("/") != default:
             secrets.append(configured)
     secrets.extend(

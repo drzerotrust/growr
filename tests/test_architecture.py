@@ -7,10 +7,38 @@ from unittest.mock import Mock
 import pytest
 
 import growr
-from growr_cli.integrations.dexscreener import DexscreenerClient
 from growr_cli.integrations.http import HttpClient
 from growr_cli.integrations.jupiter import JupiterClient
 from growr_cli.integrations.rugcheck import RugcheckClient
+
+
+def test_python_sources_use_percent_interpolation():
+    root = Path(__file__).resolve().parents[1]
+    paths = [root / "growr.py"]
+    if (root / "client.py").is_file():
+        paths.append(root / "client.py")
+    for directory in ("growr_cli", "scripts", "tests"):
+        paths.extend((root / directory).rglob("*.py"))
+
+    violations = []
+    for path in paths:
+        for node in ast.walk(ast.parse(path.read_text())):
+            # Inspect syntax so braces in JSON, regexes and docstrings
+            # remain valid; logging Formatter.format is unrelated.
+            literal_format = (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in {"format", "format_map"}
+                and isinstance(node.func.value, ast.Constant)
+                and isinstance(node.func.value.value, str)
+            )
+            if isinstance(node, ast.JoinedStr) or literal_format:
+                violations.append(
+                    "%s:%s" % (path.relative_to(root), node.lineno)
+                )
+    assert not violations, "Use percent interpolation: %s" % ", ".join(
+        violations
+    )
 
 
 @pytest.mark.parametrize(
@@ -86,27 +114,23 @@ def test_http_owner_closes_the_session(monkeypatch):
     session.close.assert_called_once_with()
 
 
-@pytest.mark.parametrize("provider", ["jupiter", "dexscreener", "rugcheck"])
+@pytest.mark.parametrize("provider", ["jupiter", "rugcheck"])
 @pytest.mark.parametrize("outcome", ["success", "no_data", "failed"])
 def test_single_provider_outcomes_retain_raw_data(provider, outcome):
     http = Mock()
     raw = {"id": "mint", "unrecognized_field": "preserved"}
-    pair = {"chainId": "solana", "baseToken": {"address": "mint"}}
     clients = {
         "jupiter": JupiterClient(http, "test-key").get_token,
-        "dexscreener": DexscreenerClient(http).get_pairs,
         "rugcheck": RugcheckClient(http).get_report,
     }
     payloads = {
         "jupiter": ([raw], raw),
-        "dexscreener": ({"pairs": [pair]}, [pair]),
         "rugcheck": (raw, raw),
     }
     payload, expected = payloads[provider]
     if outcome != "success":
         payload = {
             "jupiter": [],
-            "dexscreener": {"pairs": []},
             "rugcheck": None,
         }[provider]
     error = "HTTP 503" if outcome == "failed" else None
@@ -181,12 +205,12 @@ def test_dependencies_follow_architecture(package, forbidden):
                 module = node.module or ""
                 modules = [module]
                 modules.extend(
-                    f"{module}.{alias.name}" for alias in node.names
+                    "%s.%s" % (module, alias.name) for alias in node.names
                 )
             else:
                 continue
             assert not any(
-                name == prefix or name.startswith(f"{prefix}.")
+                name == prefix or name.startswith("%s." % prefix)
                 for name in modules
                 for prefix in forbidden
-            ), f"{path.relative_to(root)} imports {modules}"
+            ), "%s imports %s" % (path.relative_to(root), modules)

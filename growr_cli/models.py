@@ -12,7 +12,7 @@ from typing import Any, Literal
 
 Severity = Literal["critical", "high", "medium", "low", "info"]
 CoverageStatus = Literal[
-    "success", "failed", "no_data", "not_configured", "skipped"
+    "success", "failed", "partial", "no_data", "not_configured", "skipped"
 ]
 
 
@@ -38,14 +38,16 @@ class ProviderStatus:
     """Provider coverage and a compact response summary.
 
     Attributes:
-        provider: Provider name, such as Dexscreener or Jupiter.
+        provider: Provider name, such as Jupiter or Rugcheck.
         status: Coverage outcome for this scan.
         detail: Short explanation of success or failure.
+        operation: Endpoint or workflow covered by this outcome.
     """
 
     provider: str
     status: CoverageStatus
     detail: str
+    operation: str = "token_context"
 
 
 @dataclass
@@ -70,6 +72,7 @@ class ScanReport:
     findings: list[Finding] = field(default_factory=list)
     providers: list[ProviderStatus] = field(default_factory=list)
     provider_data: dict[str, Any] = field(default_factory=dict, repr=False)
+    social: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert nested dataclasses into normal JSON data.
@@ -148,14 +151,3 @@ class ProviderSnapshot:
     market: dict[str, Any]
     risk: dict[str, Any]
     activity: dict[str, ActivitySnapshot] = field(default_factory=dict)
-
-
-@dataclass
-class PoolSnapshot:
-    """Pair identity and liquidity for selection policies."""
-
-    address: Any
-    chain: Any
-    base_mint: Any
-    liquidity: Any
-    raw: dict[str, Any]

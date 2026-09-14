@@ -9,8 +9,8 @@ from growr_cli.models import (
 )
 from growr_cli.output import renderer_for
 from growr_cli.renderers.base import BaseConsoleRenderer
+from growr_cli.renderers.jupiter import JupiterConsoleRenderer
 from growr_cli.renderers.listings import (
-    DexscreenerConsoleRenderer,
     ListConsoleRenderer,
 )
 from growr_cli.renderers.scans import (
@@ -20,6 +20,28 @@ from growr_cli.renderers.scans import (
 )
 from growr_cli.renderers.stonkfun import StonkfunConsoleRenderer
 from tests.test_enrichment import MINT, enricher, launch_report, providers_for
+
+
+@pytest.mark.parametrize(
+    ("value", "price", "suffix", "expected"),
+    [
+        (1234567.5, False, "", "1,234,567.5 J"),
+        (-1234.125, False, "", "-1,234.12 J"),
+        (0, False, "", "0 J"),
+        (-0.0, False, "", "-0 J"),
+        (99.999, False, "%", "100% J"),
+        (0.000000123456789, True, "", "1.23457e-07 J"),
+        (1234567.89, True, "", "1.23457e+06 J"),
+        (None, False, "", "—"),
+    ],
+)
+def test_listing_metric_preserves_numeric_display(
+    value, price, suffix, expected
+):
+    renderer = JupiterConsoleRenderer(use_color=False)
+    item = {"value": value, "source": "jupiter"}
+
+    assert renderer._metric_cell(item, price=price, suffix=suffix) == expected
 
 
 def _report() -> ScanReport:
@@ -40,9 +62,7 @@ def _report() -> ScanReport:
                 "on-chain RPC",
             )
         ],
-        providers=[
-            ProviderStatus("Dexscreener", "success", "Market pair found")
-        ],
+        providers=[ProviderStatus("Jupiter", "success", "Token found")],
     )
 
 
@@ -54,7 +74,7 @@ def test_no_color_skips_ansi(capsys) -> None:
     assert "\033[" not in output
     assert "Top Holder Concentration" not in output or "Holders" in output
     assert "[LOW] Top holder concentration" in output
-    assert "Dexscreener: SUCCESS" in output
+    assert "Jupiter: SUCCESS" in output
 
 
 @pytest.mark.parametrize(
@@ -75,9 +95,9 @@ def test_scan_dispatch_and_shared_output(
     assert isinstance(renderer, BaseConsoleRenderer)
     renderer.render(report)
     text = capsys.readouterr().out
-    assert f"growr | {title} Scan" in text
+    assert "growr | %s Scan" % title in text
     assert "[LOW] Top holder concentration" in text
-    assert "Dexscreener: SUCCESS" in text
+    assert "Jupiter: SUCCESS" in text
 
 
 @pytest.mark.parametrize(
@@ -95,14 +115,14 @@ def test_stonkfun_dispatch_keeps_tables(capsys, mode):
     assert "Provider-reported risk" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("mode", ["boosted", "community-takeovers"])
-def test_dexscreener_listing_supports_table(capsys, mode):
+@pytest.mark.parametrize("mode", ["recent", "toptraded"])
+def test_jupiter_listing_supports_table(capsys, mode):
     report = SearchReport(
         mode,
-        TokenSearches([{"tokenAddress": MINT}], 0.0, "dexscreener", "success"),
+        TokenSearches([{"id": MINT}], 0.0, "jupiter", "success"),
     )
     renderer = renderer_for(report, False)
-    assert type(renderer) is DexscreenerConsoleRenderer
+    assert type(renderer) is JupiterConsoleRenderer
     assert isinstance(renderer, ListConsoleRenderer)
     assert isinstance(renderer, BaseConsoleRenderer)
     renderer.render(report)
@@ -131,7 +151,7 @@ def test_unknown_reports_fail_selection():
         TokenConsoleRenderer,
         WalletConsoleRenderer,
         TokenAccountConsoleRenderer,
-        DexscreenerConsoleRenderer,
+        JupiterConsoleRenderer,
         StonkfunConsoleRenderer,
     ],
 )

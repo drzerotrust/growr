@@ -41,13 +41,22 @@ def request_metadata(args) -> dict[str, Any]:
     if args is None:
         return {"command": None, "target": None, "options": {}, "rpc": None}
     options = {"include_raw": args.include_raw}
-    if args.scan_type == "list":
-        source = "stonks" if args.stonk else "dexscreener"
+    if args.scan_type == "search":
+        options.update(source=args.provider, mode="search", query=args.query)
+        if args.provider == "stonks":
+            options.update(
+                sort=args.sort, page=args.page, page_size=args.page_size
+            )
+    elif args.scan_type == "list":
+        source = args.provider
         options["source"] = source
-        feed = "boosted" if args.boosted else "community-takeovers"
-        options["mode"] = args.stonk_search if args.stonk else feed
+        options["mode"] = (
+            args.stonk_search if args.stonk else args.jupiter_search
+        )
         options["on_chain"] = args.on_chain
-        if args.stonk and args.stonk_search != "recent":
+        if not args.stonk:
+            options.update(interval=args.interval, limit=args.limit)
+        if args.stonk:
             options.update(
                 page=args.page or 1,
                 page_size=args.page_size or 30,
@@ -55,9 +64,15 @@ def request_metadata(args) -> dict[str, Any]:
             )
     elif args.scan_type == "token":
         options.update(
-            jupiter=not args.no_jupiter, rugcheck=not args.no_rugcheck
+            jupiter=not (args.stonk or args.no_jupiter),
+            rugcheck=not (args.stonk or args.no_rugcheck),
         )
-    uses_rpc = args.scan_type != "list" or args.on_chain
+        if args.stonk:
+            options["stonk"] = True
+            options["compare_rewards"] = args.compare_to is not None
+    uses_rpc = args.scan_type not in {"list", "search"} or getattr(
+        args, "on_chain", False
+    )
     rpc = "CLI --rpc-url override" if args.rpc_url else settings.RPC_LABEL
     return {
         "command": args.scan_type,
@@ -108,6 +123,18 @@ def _aggregate(outcomes) -> list[dict[str, Any]]:
     return result
 
 
+def _skipped_providers(args) -> list[str]:
+    """Expose context providers disabled by flags or Stonkfun mode."""
+
+    if args.scan_type != "token":
+        return []
+    return [
+        source
+        for source in ("jupiter", "rugcheck")
+        if args.stonk or getattr(args, "no_%s" % source, False)
+    ]
+
+
 def build_response(run, args=None, report=None, error=None) -> dict[str, Any]:
     """Normalize a run independently of console presentation."""
 
@@ -116,17 +143,16 @@ def build_response(run, args=None, report=None, error=None) -> dict[str, Any]:
         if report is not None
         else ([], None, [])
     )
-    if args is not None and args.scan_type == "token" and records:
-        for source in ("jupiter", "rugcheck"):
-            if getattr(args, f"no_{source}"):
-                records[0]["coverage"].append(
-                    coverage(
-                        source,
-                        "token_context",
-                        "skipped",
-                        "Disabled by request",
-                    )
+    if args is not None and records:
+        for source in _skipped_providers(args):
+            records[0]["coverage"].append(
+                coverage(
+                    source,
+                    "token_context",
+                    "skipped",
+                    "Disabled by request",
                 )
+            )
     outcomes.extend(_all_coverage(records))
     status = "success" if records else "no_data"
     if any(
@@ -135,7 +161,7 @@ def build_response(run, args=None, report=None, error=None) -> dict[str, Any]:
     ):
         status = "partial"
     result = {
-        "schema_version": "1.0",
+        "schema_version": "2.2",
         "tool": {"name": "growr", "version": __version__},
         "run": run.metadata(),
         "request": request_metadata(args),
@@ -159,7 +185,7 @@ def _clean(value, path="$") -> tuple[Any, list[dict[str, Any]]]:
                 "growr",
                 "normalization",
                 "partial",
-                f"Non-finite number replaced with null at {path}",
+                "Non-finite number replaced with null at %s" % path,
             )
         ]
     if isinstance(value, dict):
@@ -169,7 +195,7 @@ def _clean(value, path="$") -> tuple[Any, list[dict[str, Any]]]:
         if len(set(keys)) != len(keys):
             raise TypeError("Redaction would merge JSON object keys")
         children = {
-            key: _clean(item, f"{path}.{key}")
+            key: _clean(item, "%s.%s" % (path, key))
             for key, item in zip(keys, value.values(), strict=True)
         }
         return (
@@ -178,7 +204,7 @@ def _clean(value, path="$") -> tuple[Any, list[dict[str, Any]]]:
         )
     if isinstance(value, list):
         entries = [
-            _clean(item, f"{path}[{index}]")
+            _clean(item, "%s[%s]" % (path, index))
             for index, item in enumerate(value)
         ]
         return [entry[0] for entry in entries], [

@@ -30,10 +30,9 @@ def test_default_configuration_explains_public_services(monkeypatch, capsys):
     monkeypatch.setattr(settings, "REQUEST_TIMEOUT_SECONDS", 15.0)
     for name in (
         "PUBLIC_SOLANA_RPC_URL",
-        "DEXSCREENER_V1_API_URL",
         "STONKS_API_URL",
     ):
-        default = getattr(settings, f"DEFAULT_{name}").rstrip("/")
+        default = getattr(settings, "DEFAULT_%s" % name).rstrip("/")
         monkeypatch.setattr(settings, name, default)
     configure_console_logging(enabled=True, use_color=False)
     log_configuration(
@@ -52,12 +51,14 @@ def test_default_configuration_explains_public_services(monkeypatch, capsys):
 
 def test_custom_urls_and_keys_never_appear_in_logs(monkeypatch, capsys):
     secret = "sensitive-key-never-log"
-    endpoint = f"https://user:password@private.example/{secret}?key={secret}"
+    endpoint = "https://user:password@private.example/%s?key=%s" % (
+        secret,
+        secret,
+    )
     for name in ("HELIUS_API_KEY", "JUPITER_API_KEY"):
         monkeypatch.setattr(settings, name, secret)
     for name in (
         "HELIUS_MAINNET_RPC_URL",
-        "DEXSCREENER_V1_API_URL",
         "STONKS_API_URL",
         "JUPITER_API_URL",
     ):
@@ -78,15 +79,31 @@ def test_custom_urls_and_keys_never_appear_in_logs(monkeypatch, capsys):
         ("JUPITER_API_KEY", "your_jupiter_api_key", ["list", "stonks"]),
         ("STONKS_API_URL", "invalid-private-value", ["list", "stonks"]),
         (
-            "DEXSCREENER_V1_API_URL",
+            "STONKS_API_URL",
+            "invalid-private-value",
+            ["search", "stonks", "te"],
+        ),
+        (
+            "JUPITER_API_URL",
             "https://host:99999",
-            ["list", "dexscreener"],
+            ["list", "jupiter"],
+        ),
+        (
+            "JUPITER_API_URL",
+            "https://host:99999",
+            ["search", "jupiter", "JUP"],
+        ),
+        (
+            "JUPITER_API_KEY",
+            "your_jupiter_api_key",
+            ["search", "jupiter", "JUP"],
         ),
     ],
 )
 def test_invalid_active_configuration_fails_before_http(
     monkeypatch, capsys, name, value, command
 ):
+    monkeypatch.setattr(settings, "JUPITER_API_KEY", "synthetic-key")
     monkeypatch.setattr(settings, name, value)
     monkeypatch.setattr("sys.argv", ["growr.py", "--json", *command])
     http = Mock()
@@ -101,10 +118,15 @@ def test_invalid_active_configuration_fails_before_http(
     http.assert_not_called()
 
 
-def test_unused_credentials_do_not_block_dex_discovery(monkeypatch):
-    monkeypatch.setattr(settings, "JUPITER_API_KEY", "your_jupiter_api_key")
+@pytest.mark.parametrize(
+    "command", [["list", "jupiter"], ["search", "jupiter", "JUP"]]
+)
+def test_unused_rpc_credentials_do_not_block_jupiter_discovery(
+    monkeypatch, command
+):
+    monkeypatch.setattr(settings, "JUPITER_API_KEY", "synthetic-key")
     monkeypatch.setattr(settings, "HELIUS_API_KEY", "your_helius_api_key")
-    log_configuration(arguments("list", "dexscreener"), "bad-unused-rpc", None)
+    log_configuration(arguments(*command), "bad-unused-rpc", None)
 
 
 @pytest.mark.parametrize("value", ["inf", "nan", "-1", "private-invalid"])
@@ -114,7 +136,7 @@ def test_bad_timeout_uses_announced_finite_default(monkeypatch, capsys, value):
     monkeypatch.setattr(settings, "REQUEST_TIMEOUT_SECONDS", timeout)
     assert timeout == 15.0
     configure_console_logging(enabled=True, use_color=False)
-    log_configuration(arguments("list", "dexscreener"), None, None)
+    log_configuration(arguments("list", "stonks"), None, None)
     output = capsys.readouterr()
     assert "Invalid REQUEST_TIMEOUT_SECONDS; using default 15.0" in output.err
     assert value not in output.err

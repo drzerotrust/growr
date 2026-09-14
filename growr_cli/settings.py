@@ -13,10 +13,9 @@ DEFAULT_TIMEOUT_SECONDS = 15.0
 DEFAULT_PUBLIC_SOLANA_RPC_URL = "https://api.mainnet-beta.solana.com"
 DEFAULT_HELIUS_MAINNET_RPC_URL = "https://mainnet.helius-rpc.com"
 DEFAULT_RUGCHECK_API_URL = "https://api.rugcheck.xyz/v1"
-DEFAULT_DEXSCREENER_API_URL = "https://api.dexscreener.com/latest/dex"
-DEFAULT_DEXSCREENER_V1_API_URL = "https://api.dexscreener.com"
 DEFAULT_JUPITER_API_URL = "https://api.jup.ag/tokens/v2"
-DEFAULT_STONKS_API_URL = "https://www.stonkfun.xyz/api/"
+DEFAULT_STONKS_API_URL = "https://www.stonkfun.xyz/api/public/v1"
+DEFAULT_STONKS_HOLDERS_API_URL = "https://www.stonkfun.xyz/api/token-holders"
 
 
 def _environment_value(*names) -> str | None:
@@ -71,22 +70,22 @@ REQUEST_TIMEOUT_SECONDS = _timeout_seconds(REQUEST_TIMEOUT_VALUE)
 RUGCHECK_API_URL = _base_url(
     _environment_value("RUGCHECK_API_URL"), DEFAULT_RUGCHECK_API_URL
 )
-DEXSCREENER_API_URL = _base_url(
-    _environment_value("DEXSCREENER_API_URL"), DEFAULT_DEXSCREENER_API_URL
-)
-DEXSCREENER_V1_API_URL = _base_url(
-    _environment_value("DEXSCREENER_V1_API_URL"),
-    DEFAULT_DEXSCREENER_V1_API_URL,
-)
 JUPITER_API_URL = _base_url(
     _environment_value("JUPITER_API_URL"), DEFAULT_JUPITER_API_URL
 )
 STONKS_API_URL = _base_url(
     _environment_value("STONKS_API_URL"), DEFAULT_STONKS_API_URL
 )
+# Upgrade the previous public default; preserve custom endpoints.
+if STONKS_API_URL == "https://www.stonkfun.xyz/api":
+    STONKS_API_URL = DEFAULT_STONKS_API_URL
+STONKS_HOLDERS_API_URL = _base_url(
+    _environment_value("STONKS_HOLDERS_API_URL"),
+    DEFAULT_STONKS_HOLDERS_API_URL,
+)
 
 if HELIUS_API_KEY:
-    RPC_URL = f"{HELIUS_MAINNET_RPC_URL}?api-key={HELIUS_API_KEY}"
+    RPC_URL = "%s?api-key=%s" % (HELIUS_MAINNET_RPC_URL, HELIUS_API_KEY)
     RPC_LABEL = "Helius RPC"
 elif CUSTOM_RPC_URL:
     RPC_URL = CUSTOM_RPC_URL

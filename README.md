@@ -7,13 +7,49 @@ handles scheduling, comparisons, selection, and narrative report generation.
 
 It scans:
 
-- token mints: authorities, standard Metaplex metadata, largest token accounts, Dexscreener market context, optional Rugcheck, and optional Jupiter enrichment
-- SPL token accounts: mint, owner, balance, state, delegate, close authority, and basic owner-wallet context
-- wallets: SOL balance, recent signature count, and SPL Token / Token-2022 account counts
+- token mints: authorities, standard Metaplex metadata, largest token accounts, Jupiter market/activity enrichment and social evidence, plus optional Rugcheck
+- SPL Token / Token-2022 token accounts: mint, owner, balance, state, delegate, close authority, and basic owner-wallet context
+- wallets: SOL balance, recent signature count, and SPL Token / Token-2022 account addresses, mints, raw balances, states and counts
+
+Use `list` to browse feeds, `search <jupiter|stonks> <QUERY>` to find candidates,
+and `token <MINT>` to analyze a selected mint. Search returns the selected
+provider's available market/social data without RPC calls or automatic selection.
 
 The scanner does not sign, send, or simulate transactions, or persist analysis results.
 It asks public/provider APIs and prints the answers. Run the CLI with
 `python growr.py`.
+
+## Search examples
+
+After installing the requirements below, use
+`python3 growr.py search <provider> <query>`. The provider is `stonks` or
+`jupiter`; quote queries that contain spaces.
+
+```bash
+# Search Stonkfun by name, symbol or mint; no API key required.
+python3 growr.py search stonks te
+
+# Return JSON for an agent or reporting pipeline.
+python3 growr.py --json search stonks te
+
+# Sort matching tokens by volume and request the second page.
+python3 growr.py search stonks te --sort volume --page 2 --page-size 10
+
+# Find the newest matching tokens, including the original API response.
+python3 growr.py --json --include-raw search stonks te --sort newest
+
+# Search Jupiter after setting JUPITER_API_KEY in .env.
+python3 growr.py search jupiter JUP
+python3 growr.py --json search jupiter "Wrapped SOL"
+
+# Show every search option and more examples.
+python3 growr.py search --help
+```
+
+Search returns candidate mint addresses and available market/social data.
+Choose a returned mint for a separate `token` command to run on-chain analysis.
+Put global flags such as `--json` before `search`. See
+[Token search](#token-search) for provider options and output details.
 
 ## Requirements
 
@@ -41,7 +77,7 @@ cp .env.example .env
 
 The example works unchanged: blank keys select public Solana RPC and leave
 Jupiter enrichment unconfigured. No API key is required for basic RPC scans
-or Dexscreener/Stonks discovery. Set `HELIUS_API_KEY` to select Helius and
+or Stonks discovery. Jupiter discovery requires a Jupiter API key. Set `HELIUS_API_KEY` to select Helius and
 `JUPITER_API_KEY` (or `JUP_API_KEY`) to enable Jupiter enrichment. Supply real
 keys, not placeholder text. Custom RPC configuration is optional.
 
@@ -55,12 +91,10 @@ An invalid or non-finite timeout falls back to 15 seconds with a warning.
 `--quiet` explicitly enables warning/error logs only; `--help` and `schema` run offline
 without configuration validation. JSON stdout remains machine-readable.
 
-`RUGCHECK_API_URL`, `DEXSCREENER_API_URL`, and `JUPITER_API_URL` configure
-the provider API bases. They default to the values in `.env.example`.
-`DEXSCREENER_API_URL` must include `/latest/dex` for single-token lookups;
-`DEXSCREENER_V1_API_URL` uses the API root for discovery and batch lookups.
-Using the root for both makes direct token enrichment fail even when
-Dexscreener listings work.
+`RUGCHECK_API_URL`, `JUPITER_API_URL`, and `STONKS_API_URL` configure
+provider API bases. `STONKS_HOLDERS_API_URL` configures the full legacy
+holder endpoint used only by `token --stonk`. Defaults are in `.env.example`.
+Jupiter uses `https://api.jup.ag/tokens/v2` for both discovery and enrichment.
 
 The RPC selection order is explicit: `--rpc-url`, Helius when
 `HELIUS_API_KEY` is set, `SOLANA_RPC_URL` (or the compatibility alias
@@ -76,12 +110,16 @@ configuration for credentials and a safe RPC label in reports.
 
 ## Machine output contract
 
-Version **1.0** replaces the pre-0.2 JSON format. Console tables remain the
-default; `--json` selects the agent-facing format for every scan and listing.
+Version **2.2** adds Stonkfun reward totals and optional snapshot comparisons
+to the JSON contract. Search remains available for Jupiter and Stonks.
+Console tables remain the default; `--json` selects the agent-facing format
+for every scan, listing and search.
 Global flags precede the subcommand. There is no legacy JSON mode.
 
 ```bash
 python growr.py --json token <MINT>
+python growr.py --json search jupiter JUP
+python growr.py --json search stonks te
 python growr.py --json list stonks --stonk-search volume
 python growr.py --json --include-raw list stonks
 python growr.py schema
@@ -154,7 +192,7 @@ or decoded binary-account payloads are added by this option.
 
 Migration from the old JSON paths:
 
-| Previous path | Version 1.0 |
+| Previous path | Current envelope |
 | --- | --- |
 | `scan_type`, `address` | `records[0].kind`, `records[0].identity.address` |
 | `summary` | `records[0].facts` and `records[0].metrics` |
@@ -171,12 +209,61 @@ Run commands from the repository root.
 # Token mint scan with on-chain facts and optional provider context.
 python3 growr.py token EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
 
+# Single Stonkfun token with RPC checks and Stonkfun context.
+python3 growr.py token <MINT> --stonk
+
 # Wallet scan.
 python3 growr.py wallet 11111111111111111111111111111111
 
-# SPL token-account scan.
+# SPL Token or Token-2022 token-account scan.
 python3 growr.py token-account GfVPzUxMDvhFJ1Xs6C9i47XQRSapTd8LHw5grGuTquyQ
 ```
+
+`token-account` accepts the holding account for a specific mint and owner.
+For a holder's wallet address, use `wallet <ADDRESS>`; for the coin itself,
+use `token <MINT>`. Both SPL Token and Token-2022 base account fields are
+supported, but Token-2022 extension bodies are not decoded. A wallet can
+have zero data bytes, so a wallet address cannot be decoded as a token account.
+
+### Wallet token-account inventory
+
+Wallet scans include each validated token account in both the console table
+and `records[0].facts.token_accounts.entries` in JSON. No extra flag or
+per-account RPC lookup is needed; Growr decodes the account data returned by
+the existing SPL Token and Token-2022 inventory requests.
+
+```bash
+python3 growr.py wallet Beqv6dzTcjV2eodo8RRXCiCcnSYrS1vkQKhfqwHXqeit
+
+# Save a machine-readable inventory, then extract its token-account addresses.
+python3 growr.py --json wallet <WALLET> > wallet.json
+jq -r '.records[0].facts.token_accounts.entries[].address' wallet.json
+
+# Copy a returned address into a focused account scan.
+python3 growr.py token-account <TOKEN_ACCOUNT>
+```
+
+Each entry contains:
+
+| Field | Meaning |
+| --- | --- |
+| `address` | Token-account address for a subsequent `token-account` scan |
+| `mint` | Mint held by this account |
+| `token_program` | `spl_token` or `token_2022` |
+| `raw_amount` | Exact integer balance as a decimal string, before mint-decimal conversion |
+| `state` | `uninitialized`, `initialized`, or `frozen` |
+
+Zero-balance accounts remain in the inventory. Entries preserve RPC order
+within each program, with SPL Token first and Token-2022 second. Accounts for
+the same mint remain separate; Growr does not sum balances or value holdings.
+
+Existing account counts describe returned RPC entries. Unusable or duplicate
+entries are omitted from `entries` and counted in `unparsed_account_count`,
+with partial coverage and a console finding. A failed program lookup has a
+null count and failed coverage; the other program's entries remain available.
+Two successful empty lookups produce an empty array and zero counts. Usable
+partial reports still exit 0, so pipelines should inspect `status` and
+`coverage` before treating an empty array as a complete inventory.
 
 ### Useful flags
 
@@ -187,12 +274,323 @@ python3 growr.py --json token <MINT>
 # Use a one-off RPC endpoint without touching environment files.
 python3 growr.py --rpc-url https://api.mainnet-beta.solana.com wallet <ADDRESS>
 
-# Skip Jupiter and Rugcheck; Dexscreener context still runs.
+# Read only the chain by skipping both context providers.
 python3 growr.py token <MINT> --no-jupiter --no-rugcheck
 
 # Plain text for CI logs or files that dislike ANSI colors.
 python3 growr.py --no-color token <MINT>
 ```
+
+## RPC request budgets
+
+Audited on 2026-09-14 for one successful invocation. RPC calls and market
+provider HTTP requests are counted separately:
+
+| Command | Solana RPC calls | Other HTTP requests |
+| --- | --- | --- |
+| `wallet <WALLET>` | 4 | 0 |
+| `token-account <ACCOUNT>` | 3 | 0 |
+| `token <MINT>` | 3–4 | Up to 1 Jupiter + 1 Rugcheck |
+| `token <MINT> --no-jupiter --no-rugcheck` | 3–4 | 0 |
+| `token <MINT> --stonk` | 3–4 | 4 Stonkfun |
+| `list jupiter` | 0 | 1 Jupiter |
+| `list stonks` | 0 | 1 Stonkfun + optional Jupiter enrichment batches |
+| `list <provider> --on-chain` | 3–4 per unique valid mint | Same as the corresponding list |
+| `search jupiter <QUERY>` | 0 | 1 Jupiter |
+| `search stonks <QUERY>` | 0 | 1 Stonkfun |
+| `schema`, any `--help` | 0 | 0 |
+
+A wallet uses `getBalance`, `getSignaturesForAddress(limit=10)` and two
+`getTokenAccountsByOwner` calls, one for each token program. Hundreds of
+returned token accounts still cost four calls. A token-account scan reads
+that account, then the owner's balance and signatures: three calls.
+
+A token scan reads the mint, derived Metaplex metadata, largest accounts,
+and a single batch of those accounts to resolve owners. Empty largest-account
+results skip the batch, giving three calls. Metadata address derivation and
+inventory decoding are local. Listing verification deduplicates mints and
+uses at most two concurrent mint scans; 30 distinct mints normally mean 120
+RPC calls. Concurrency reduces elapsed time, not the number of calls.
+
+Stonks list enrichment batches up to 100 distinct mints per Jupiter request
+when its key is configured. A conforming nonempty CLI page normally adds one
+Jupiter request; empty lists or missing keys add none. Search does not enrich.
+`--stonk` token context requests market, holders, burns and rewards once each.
+
+`--json`, `--include-raw`, logging and valid `--compare-to` add no network
+requests. Errors may stop execution early. Counts assume normal responses,
+exclude HTTP redirects, and do not include provider-internal work. There is
+no application retry loop or automatic pagination. JSON `coverage.counts`
+describes outcomes, not request counts; per-run request metering is not yet
+implemented.
+
+RPC counts are not always provider credit counts. Helius currently lists
+standard RPC at one credit per call; its full `getTransactionsForAddress`
+responses start at ten credits per 100 returned transactions, rounded up.
+Check the [Helius credit schedule](https://www.helius.dev/docs/billing/credits)
+for current billing. Jupiter and Stonkfun have separate usage policies.
+
+## Investigation playbooks
+
+These recipes use current Growr commands. JSON extraction examples require
+`jq`. Recent transaction details currently require direct RPC; no Growr
+transaction-history command or flag is implemented yet.
+
+### 1. Find the largest accounts and their owners
+
+```bash
+python3 growr.py --json token <MINT> \
+  --no-jupiter --no-rugcheck > token.json
+jq '{status, coverage}' token.json
+jq '.records[0].facts.holders.top_accounts' token.json
+jq -r '[.records[0].facts.holders.top_accounts[]
+  | .owner | select(. != null)] | unique[]' token.json > owners.txt
+```
+
+Rows contain token-account address, resolved owner, balance and supply share.
+This is the largest-account sample, not every holder or a list of verified
+people. Pools and lockers can appear, and one owner may control several
+accounts. Use `token <MINT> --stonk` for additional platform-reported holders.
+A complete holder census needs a separate paginated workflow, such as mint
+queries through [Helius getTokenAccounts](https://www.helius.dev/docs/api-reference/das/gettokenaccounts),
+followed by owner aggregation; Growr does not implement that workflow yet.
+
+### 2. Inspect what else a selected wallet holds
+
+```bash
+python3 growr.py --json wallet <WALLET> > wallet.json
+jq '{status, coverage}' wallet.json
+jq -r '[.records[0].facts.token_accounts.entries[]
+  | select(.raw_amount != "0") | .mint] | unique[]' wallet.json
+```
+
+Select a few distinct owners from the token scan instead of automatically
+scanning every account. A token scan plus five owner-wallet scans normally
+costs 24 RPC calls. Inventory includes zero balances; the query above selects
+nonzero holdings without converting large integers to floating point.
+Possession does not establish a purchase: unsolicited tokens may appear.
+
+### 3. Select a token account for closer inspection
+
+```bash
+jq -r '.records[0].facts.token_accounts.entries[].address' wallet.json
+python3 growr.py --json token-account <TOKEN_ACCOUNT> > account.json
+```
+
+Use a returned account address, not the wallet or mint. The scan exposes
+state, delegate, close authority and basic owner context. Its recent-signature
+count belongs to the owner wallet, not to the token-account address.
+
+### 4. Retrieve recent transactions through RPC
+
+The current wallet scan already requests ten recent signatures but only
+reports their count. Transaction bodies and action classification are not
+included. For either a wallet or a token-account address, call
+[getSignaturesForAddress](https://solana.com/docs/rpc/http/getsignaturesforaddress)
+and then [getTransaction](https://solana.com/docs/rpc/http/gettransaction) for
+selected signatures. One signature page plus ten bodies costs eleven RPC
+calls as a standalone lookup. An eventual wallet extension could reuse its
+existing signatures, adding ten calls for a total of fourteen.
+
+Wallet-address history can miss incoming token transfers that reference only
+the receiving token account. Use the token-account address for its own
+history. For broader wallet coverage, Helius
+[getTransactionsForAddress](https://www.helius.dev/docs/rpc/gettransactionsforaddress)
+supports full results plus owned-token-account filters in one page. That
+integration is not currently used by Growr. A bounded page still does not
+establish complete lifetime history.
+
+This bounded example uses the project's configured RPC from `.env`. It
+writes manual RPC results, not a Growr schema envelope, and makes at most
+eleven calls. Change `address` to inspect a selected token account.
+
+```bash
+python3 - <<'PY' > recent-transactions.json
+import json
+
+import requests
+
+from growr_cli import settings
+
+address = "Beqv6dzTcjV2eodo8RRXCiCcnSYrS1vkQKhfqwHXqeit"
+limit = 10
+
+
+def rpc(session, method, params):
+    """Fetch one RPC result with a finite timeout and safe errors."""
+
+    try:
+        response = session.post(
+            settings.RPC_URL,
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": method,
+                "params": params,
+            },
+            timeout=settings.REQUEST_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        body = response.json()
+    except (requests.RequestException, ValueError):
+        raise SystemExit(
+            "RPC request failed; no complete report written"
+        ) from None
+    if not isinstance(body, dict) or "result" not in body or body.get("error"):
+        raise SystemExit(
+            "RPC rejected the request; no complete report written"
+        )
+    return body["result"]
+
+
+with requests.Session() as session:
+    signatures = rpc(
+        session,
+        "getSignaturesForAddress",
+        [address, {"limit": limit, "commitment": "confirmed"}],
+    )
+    transactions = []
+    for item in signatures[:limit]:
+        signature = item["signature"]
+        detail = rpc(
+            session,
+            "getTransaction",
+            [
+                signature,
+                {
+                    "encoding": "jsonParsed",
+                    "commitment": "confirmed",
+                    "maxSupportedTransactionVersion": 0,
+                },
+            ],
+        )
+        transactions.append({"signature": signature, "detail": detail})
+print(json.dumps({"address": address, "transactions": transactions}, indent=2))
+PY
+```
+
+The example supports legacy/v0 transactions and stops on request errors.
+A null transaction body remains unavailable. It has no automatic paging,
+retries or partial-report handling. Inspect transaction status, instructions
+and balance changes before interpreting an address reference as a buy,
+sell or reward; `jsonParsed` does not classify every protocol.
+
+## Single Stonkfun token
+
+`token <MINT>` runs the RPC scan with Jupiter and Rugcheck
+context. With `--stonk`, the mint, metadata and largest-account RPC checks
+still run, while Stonkfun supplies the external context in place of those
+two providers.
+
+```bash
+python3 growr.py token <MINT> --stonk
+python3 growr.py --json token <MINT> --stonk
+python3 growr.py --json --include-raw token <MINT> --stonk
+```
+
+Stonkfun requires no API key. `STONKS_API_URL` defaults to
+`https://www.stonkfun.xyz/api/public/v1`:
+
+| Endpoint | Data |
+| --- | --- |
+| `/tokens/<MINT>` | Exact token, price, market cap, volume, launch and quote details |
+| `/tokens/<MINT>/burns` | Reported burn total and recent events |
+| `/tokens/<MINT>/rewards` | Reward currency, distributed/undistributed totals, counts and last payout |
+| `STONKS_HOLDERS_API_URL?mint=<MINT>` | Supply, holder count, addresses, balances and completeness |
+
+Holders still use `https://www.stonkfun.xyz/api/token-holders`: the documented
+v1 API has no live-holder endpoint. Configure that full URL separately when
+using a proxy. An existing `STONKS_API_URL=https://www.stonkfun.xyz/api` is
+upgraded automatically to v1. Custom API bases are preserved and must serve
+v1-compatible routes and responses.
+
+Each endpoint has separate coverage. Unavailable or malformed data is marked
+`failed`; `complete: false` holder data is `partial` and remains available.
+A usable RPC report still exits zero when optional Stonkfun context is partial.
+The API's `not_found` token response is `no_data`. Normal RPC failures retain their
+existing behavior. Jupiter credentials and other market-provider settings are
+unused in this mode; `--no-jupiter` and `--no-rugcheck` are redundant with it.
+
+JSON keeps the canonical command and record kind `token`. Provider observations
+appear under `records[].metrics.stonks_market`, `stonks_holders`, and
+`stonks_burns`, and `stonks_rewards`, with source `stonks` and normalized data under `values`.
+RPC observations remain in `facts`. `--include-raw` adds the fetched endpoint
+payloads under the same names in `records[].raw` without extra requests.
+
+The console summarizes the exact token and shows the first ten returned
+holders. JSON retains every returned holder and recent burn. A reported
+holder address is not assumed to be an RPC token account. Base-unit burn
+amounts remain decimal strings when supplied; missing amounts are not inferred
+from floating-point values. USD values describe historical values at burn time.
+V1 exposes `stonks_burns.values.totals` and `recent`; the former unversioned
+`buyback_totals`, `reward_totals`, and `all_totals` breakdown is no longer
+supplied. Consumers must tolerate these optional groups being absent.
+
+## Stonkfun reward totals and daily comparisons
+
+`token <MINT> --stonk` also retrieves coin-wide reward totals. Reward-mode
+coins report the currency they pay, lifetime distributed tokens, reported
+undistributed tokens, payout/holder counts, and the last payout time.
+Standard-mode coins return `no_data` for rewards; this is not a provider failure.
+These amounts describe the coin's distributions, not an individual wallet's earnings.
+
+Save a normal JSON report, then pass it to a later run with `--compare-to`:
+
+```bash
+# First observation: retain this file in your reporting pipeline.
+python3 growr.py --json token <MINT> --stonk > first.json
+
+# Run later, for example the following day, using a DIFFERENT output file.
+python3 growr.py --json token <MINT> --stonk \
+  --compare-to first.json > latest.json
+
+# Display the same comparison in the console.
+python3 growr.py token <MINT> --stonk --compare-to first.json
+```
+
+Replace `<MINT>` with the coin address. `--compare-to` requires `token --stonk`
+and a schema 2.2 Growr report with successful, timestamped rewards for the
+same mint. A report marked `partial` can still supply a baseline when its
+rewards operation succeeded. Older reports without reward snapshots cannot.
+`--include-raw` is not needed. Invalid files fail before network clients are created.
+
+**Never redirect output into the input snapshot file.** The shell truncates
+redirected output before Growr can read it. Growr only reads the supplied
+file; it does not create a database, update history, or schedule future runs.
+Your pipeline controls retention and scheduling.
+
+The calculation uses cumulative **raw reward-token units** and Stonkfun's
+`meta.generatedAt`, not the CLI run timestamp or the token's price:
+
+```text
+interval rewards = current distributed total − previous distributed total
+normalized daily rate = interval rewards × 86400 / elapsed seconds
+```
+
+For example, 2 reward tokens distributed over 12 hours produce an observed
+interval total of 2 and a normalized rate of 4 tokens per 24 hours. That rate
+is not a measured calendar-day payout or a forecast. Cached timestamps,
+missing timestamps, changed reward mint/decimals, and decreasing counters
+make the comparison unavailable instead of producing misleading amounts.
+Current scan data remains available with failed comparison coverage and exit 0.
+
+JSON schema 2.2 adds these token metric groups:
+
+| Group | Source | Values |
+| --- | --- | --- |
+| `records[].metrics.stonks_rewards` | `stonks` | Reward mint/symbol/decimals, `distributed_raw`, `distributed_tokens`, `undistributed_raw`, `undistributed_tokens`, reported counts, `last_payout_at`, `provider_generated_at` |
+| `records[].metrics.reward_comparison` | `growr` | Reward identity, `previous_generated_at`, `current_generated_at`, `elapsed_seconds`, `distributed_delta_raw`, `distributed_delta_tokens`, `normalized_daily_tokens` |
+
+Values are under each group's `values` key. Raw quantities are integer strings;
+token amounts are exact decimal strings. The daily division uses 28 significant
+digits. Missing optional measurements remain null, and genuine zero stays zero.
+A successful comparison appears in the second group; unavailable comparisons
+omit it and explain the problem in coverage. Neither group becomes an RPC fact.
+`request.options.compare_rewards` records whether comparison was requested,
+without revealing the local filename. `--include-raw` preserves the current
+reward API envelope; it does not copy the baseline file into the output.
+
+No additional reward requests are made by search, list, or ordinary token scans.
 
 ## Enriched Stonks launches
 
@@ -233,38 +631,38 @@ python growr.py list stonks --stonk-search volume --category collectibles
 ```
 
 `--stonk-search` accepts `recent` (the default), `marketCap`, or `volume`.
-Market-cap and volume searches use Stonks' `/platform-pools` endpoint, fetching exactly
-one page with defaults `--page 1 --page-size 30`. Both pagination arguments must be positive
-integers and apply only to the market-cap and volume modes. They also support `--json`
-and `--on-chain`.
+All modes fetch one `/tokens` page. `recent` maps to `sort=newest`, browsing
+newest tokens with live platform pools instead of the former recent-launch
+window. Defaults remain `--page 1 --page-size 30`; page must be positive and
+page size must be 1–100. All modes support pagination, `--json` and `--on-chain`.
 
-Use `--category` to filter platform listings by `xstock`, `prestock`, `custom`,
-`collectibles`, `currencies`, or `leverage`. It requires `list stonks` and
-`--stonk-search marketCap` or `volume`; recent launches do not support this filter.
-The category is sent to `/platform-pools` alongside sorting and pagination. Omitting
-it keeps the existing unfiltered request. JSON output and optional RPC verification
-work with category-filtered listings as usual.
+Use `--category` to filter any Stonks listing by `xstock`, `prestock`, `custom`,
+`collectibles`, `currencies`, or `leverage`. The API performs category filtering
+alongside sorting and pagination. Omitting it requests all categories.
+
+```bash
+python growr.py list stonks --category xstock --page 2 --page-size 20
+```
 
 Platform results retain Stonks' ordering. Their tables show the returned page, page size,
 total results, page count, and row numbers across pages. A Stonks market-cap or 24-hour
 volume column shows the ranking value separately from enriched metrics, which can differ.
 JSON preserves returned pagination and one normalized record per pool. With
-`--include-raw`, `raw.discovery` also retains the original envelope and its
-separate `featured` token, which is never inserted into the rankings.
+`--include-raw`, `raw.discovery` also retains the original `data`/`meta` envelope. Only returned `data.tokens` enter the rankings.
 An empty page is `no_data`; invalid requests reported by Stonks exit nonzero.
 
-The default view shows market and risk tables for every returned launch. Jupiter is the
-primary source for token price, liquidity, holder counts, audit flags, developer information,
-organic score, and trading statistics. Dexscreener adds indexed Solana pool data. Stonks
-launch metadata, quote assets, graduation status, and reported transfer tax are preserved.
-The existing `JUPITER_API_KEY` enables Jupiter enrichment; without it, discovery and
-Dexscreener still run and coverage shows `not_configured`.
+The default view shows market and risk tables for every returned launch.
+Jupiter supplies token price, liquidity, holder counts, audit indicators,
+developer information, organic score, and trading statistics. Stonks launch
+metadata, quote assets, graduation status, and reported transfer tax remain.
+Without `JUPITER_API_KEY`, Stonks discovery still runs and enrichment coverage
+shows `not_configured`.
 
-Results are joined by exact mint address. Jupiter lookups batch up to 100 unique mints;
-Dexscreener batches up to 30. The selected Dexscreener pool is the original Stonks pool
-when available, otherwise the highest-liquidity matching base-token pool. Token liquidity
-and selected-pool liquidity remain separate measurements. Table cells identify their source
-with J (Jupiter), D (Dexscreener), S (Stonks), or R (RPC); `—` means unknown, not zero.
+Results are joined by exact mint address, batching up to 100 unique mints.
+Price, market cap and FDV prefer available Jupiter values, then Stonks values.
+Liquidity is Jupiter's token-level measurement; no individual-pool liquidity
+is inferred. Table cells identify sources as J (Jupiter), S (Stonks), or R
+(RPC); `—` means unknown, not zero.
 
 `--json` returns normalized records containing identity, facts, sourced metrics,
 findings, social evidence, coverage, and optional on-chain observations.
@@ -283,71 +681,180 @@ timeouts remain visible as coverage gaps; launches are retained. A valid empty S
 is `no_data`. Discovery failures exit nonzero; partial enrichment still exits successfully.
 There are no automatic retries, persistence, or background monitoring.
 
-`STONKS_API_URL` defaults to `https://www.stonkfun.xyz/api`.
-`DEXSCREENER_V1_API_URL` defaults to `https://api.dexscreener.com` for batch lookups;
-the existing `DEXSCREENER_API_URL` continues to configure legacy single-token scans.
+`STONKS_API_URL` defaults to `https://www.stonkfun.xyz/api/public/v1`.
+The [public API documentation](https://www.stonkfun.xyz/developers) specifies
+300 read requests per minute per IP. Growr does not retry automatically;
+HTTP 429 failures report the server's `Retry-After` delay when valid. Scheduled
+callers should respect that delay before another invocation.
 
-## Social presence in search results
+## Jupiter discovery
 
-Stonks and Dexscreener listings include a social-presence score and website/social
-links with provider attribution. Scores use only data already fetched:
+`list jupiter` fetches one recent-pools response. Ranked feeds provide
+trading and organic-score discovery without requiring a query.
+Jupiter's recent feed reflects first pool creation, not token mint creation.
+
+```bash
+python3 growr.py list jupiter
+python3 growr.py list jupiter --jupiter-search toptraded --interval 1h --limit 20
+python3 growr.py list jupiter --jupiter-search toptrending
+python3 growr.py list jupiter --jupiter-search toporganicscore
+```
+
+Ranked feeds accept `--interval` (`5m`, `1h`, `6h`, `24h`; default `24h`)
+and `--limit` (1–100; default 50). Recent listings reject these options.
+No automatic pagination or repeat market lookup occurs: discovery already
+returns token information. Use `search jupiter <QUERY>` for query lookup.
+
+The [Jupiter Tokens API](https://developers.jup.ag/docs/tokens/token-information)
+documents these endpoints. Configure `JUPITER_API_KEY` before Jupiter listings;
+a missing key fails before network clients are created. Direct RPC scans and
+Stonks discovery can still run without that optional enrichment credential.
+
+Use `growr.py list <stonks|jupiter> [options]`. `list --stonk` remains supported.
+`list --help` explains both providers and examples. A missing provider displays
+that help on stderr and exits 2; JSON mode emits a structured argument error.
+Stonks pagination/category flags and Jupiter search flags cannot be mixed.
+
+## Token search
+
+`search <jupiter|stonks> <QUERY>` makes one lookup through the selected
+provider. It returns candidates for a person or consuming agent to select.
+`--on-chain` is not accepted; pass the selected mint to a separate `token`
+command. Both providers support console output, `--json`, and `--include-raw`.
+Global output flags go before `search`.
+
+### Jupiter
+
+`search jupiter <QUERY>` finds Solana token candidates by name, symbol or mint
+using Jupiter's `/tokens/v2/search` endpoint. Configure `JUPITER_API_KEY`
+(or `JUP_API_KEY`); the command reads it from the environment. A missing key
+fails before any network clients are created.
+
+```bash
+python3 growr.py search jupiter JUP
+python3 growr.py search jupiter "Wrapped SOL"
+python3 growr.py --json search jupiter <MINT>
+python3 growr.py --json --include-raw search jupiter JUP
+python3 growr.py --json search jupiter "<MINT_1>,<MINT_2>"
+
+# After a person or agent selects a returned mint:
+python3 growr.py --json token <MINT>
+```
+
+Names and symbols can return multiple candidates. Results preserve Jupiter's
+order and include mint addresses, names, symbols, available market data and
+social links. Mint queries retain only exact `id` matches. Comma-separated
+queries accept up to 100 mint addresses; multiple names are not supported.
+
+Jupiter search makes one lookup without RPC, Rugcheck or Stonkfun requests.
+It does not select or scan a result automatically. `--on-chain`, feed ranking,
+interval, limit, pagination and category flags are not accepted by `search jupiter`.
+Choose an explicit mint for a subsequent `token` command. `search --help`
+shows examples; missing provider/query arguments also show that help.
+
+JSON uses `request.command: "search"`, with the provider and normalized query
+in `request.options`. Both `request.target` and `request.rpc` are null.
+Results use the existing `token_discovery` records; `identity.mint` is the
+address to pass to `token`. Each `on_chain` field is null. An empty match
+returns `no_data` and exit code 0; provider failures return a structured error
+and exit code 1. `--include-raw` retains the fetched response without extra calls.
+
+The former `list jupiter --query <QUERY>` invocation has moved to
+`search jupiter <QUERY>`. `list` now handles recent and ranked feeds.
+
+### Stonks
+
+`search stonks <QUERY>` sends the text as `q` to `/tokens`, using
+`STONKS_API_URL`. It requires no API key and does not call Jupiter, RPC,
+Rugcheck, token-holders or burns endpoints. Unused provider credentials and
+URLs do not affect this command.
+
+```bash
+python3 growr.py search stonks te
+python3 growr.py --json search stonks "test token"
+python3 growr.py search stonks te --sort volume --page 2 --page-size 30
+python3 growr.py --json --include-raw search stonks te
+
+# Analyze a selected mint with RPC and Stonkfun context:
+python3 growr.py --json token <MINT> --stonk
+```
+
+| Option | Values | Default |
+| --- | --- | --- |
+| `--sort` | `marketCap`, `volume`, `newest` | `marketCap` |
+| `--page` | Positive integer | `1` |
+| `--page-size` | Integer, 1–100 | `30` |
+
+These options apply only to Stonks search. The command fetches one page;
+Stonkfun controls query matching and ordering. Growr retains every returned
+pool, including separate pools for the same mint, without local filtering,
+ranking or automatic pagination. Blank queries fail before network calls.
+Category filters remain available on Stonks `list` commands.
+
+Console results include names, full mint addresses, available market values,
+social links and returned pagination. JSON uses the existing schema 2.2
+`pool` records, `identity.mint` and `identity.pool`, and Stonks-sourced
+measurements in `metrics.market`. `request.options` includes the query, sort,
+page and page size; top-level `pagination` reflects the provider's response.
+`request.rpc` and each `on_chain` field are null. An empty page is `no_data`;
+HTTP or malformed-response failures are structured errors. With
+`--include-raw`, `raw.discovery` retains the original `data`/`meta` envelope. Only `data.tokens` enter the result list.
+
+## Social presence
+
+Jupiter token scans, both search providers and both listing providers include
+a presence score and website/social links with source attribution. The score uses fetched links:
 
 - A project website: **40 points**.
 - A first social platform: **40 points**.
 - A second distinct social platform: **20 points**.
 
-The maximum is 100. Duplicate links, multiple accounts on the same platform,
-and repeated mentions by providers add no points. Twitter and X count as one
-platform. Generic Stonks/Dexscreener pages, chart links, malformed URLs, and bare
-handles do not count. Malformed URLs, embedded whitespace, and invalid escapes
-are rejected before scoring. Valid internationalized URLs are normalized to
-ASCII URIs, and IPv6 brackets are retained. Links are not visited or authenticated.
-Zero means no valid links were observed in the fetched data; it does not prove
-that the project has no online presence. Provider failures remain in coverage.
+The maximum is 100. Duplicate links and repeated providers add no points;
+Twitter and X count as one platform. Links are validated HTTP(S) URLs;
+bare handles, credentials, malformed ports, embedded whitespace, invalid
+escapes, bare social homepages and generic Stonks pages are excluded.
+Valid internationalized URLs are normalized to ASCII URIs. Links are not
+visited: presence does not establish authenticity, engagement or safety.
+Zero means no valid links observed, with retrieval failures shown in coverage.
 
-Stonks combines its own links with successful Dexscreener pair results for the
-exact mint. Dexscreener discovery uses the feed's links and now displays a table
-by default. Use `--json` for normalized records, including `records[].social` with
-the score, links, platforms, sources, and provider coverage. Existing rankings
-and risk scores are unaffected. Individual token scans do not receive this score.
+Jupiter contributes its explicit website, Twitter, Telegram, Discord,
+Instagram and TikTok fields when present. Stonks listings merge their own
+links with the exact-mint Jupiter result. Stonks search uses only links
+returned by Stonkfun. All links appear with sources in
+console output and `records[].social` in JSON. RPC facts and risk scores
+remain separate. With Jupiter disabled, a direct token's social field is null.
+The Stonkfun-only token mode continues to expose its platform reports.
 
-```bash
-python growr.py list dexscreener --boosted
-python growr.py list dexscreener --community-takeovers
-python growr.py --json list dexscreener --boosted
-```
+## Optional listing verification
 
-Use `growr.py list <stonks|dexscreener> [options]` to select a provider.
-Run `python3 growr.py list --help` for provider choices and examples. Omitting
-the provider and legacy selectors displays this help on stderr and exits 2.
-With `--json`, invalid commands return the structured error envelope instead.
-`list stonks` defaults to recent launches; `list dexscreener` defaults to
-boosted discovery. `dexcreener` is accepted as a spelling alias. Existing
-`list --stonk`, `list --boosted`, and `list --community-takeovers` commands
-remain supported. The entry point is `growr.py`, following the project rename.
-Stonks selectors cannot be combined with Dexscreener feed flags. An explicit
-`--stonk-search` requires Stonks, including when its value is `recent`.
-
-Both Dexscreener feeds list only Solana tokens. Entries from other chains or
-without a chain ID are excluded before social scoring and RPC verification.
-If no Solana entries remain, JSON reports `no_data` with an empty `records`
-list. `--include-raw` preserves the original provider feed for inspection;
-that optional raw payload may include other chains.
-
-Both providers accept `--on-chain` for read-only Solana verification:
+Both providers accept `--on-chain`:
 
 ```bash
-python growr.py --json list dexscreener --on-chain
-python growr.py list dexscreener --community-takeovers --on-chain
-python growr.py --json list stonks --on-chain
+python3 growr.py --json list jupiter --jupiter-search toptraded --limit 5 --on-chain
+python3 growr.py --json list stonks --on-chain
 ```
 
-Verification scans each unique Solana mint once with at most two workers.
-Missing or invalid Solana addresses and failed scans produce failed coverage
-without discarding discovery results. JSON
-includes nested `on_chain` records for successful scans and coverage for all
-outcomes; console output includes an observations table. Without `--on-chain`,
-listings make no RPC requests. Verification does not request market context.
+Each unique Solana mint is scanned once with at most two workers. Missing or
+invalid mint addresses and failed scans produce coverage gaps without
+discarding other results. JSON includes nested `on_chain` records for successful
+scans; console output includes an observations table. Verification performs
+only RPC reads. Listings without `--on-chain` make no RPC requests.
+
+## JSON 2.2 migration
+
+Consumers should support `schema_version == "2.2"`. This additive version
+introduces the reward metric groups and `request.options.compare_rewards`.
+Reward amounts use decimal strings, as described above. Existing scan, list,
+and search record layouts remain intact. Version 2.1 introduced `search`;
+query text remains in search options, while list options describe feeds.
+Direct token market data
+is in `records[].metrics.jupiter.values`, including price, token liquidity,
+audit, activity and first-pool information. Social evidence is in
+`records[].social`, outside RPC `facts`. Jupiter discovery uses the same
+Jupiter metric group and `token_discovery` kind; its `identity.mint` comes
+from the provider's `id`. Stonks keeps pool identities and sourced
+`market`, `risk` and `activity` groups, with token-level liquidity only.
+The envelope, exit-code rules, raw opt-in and RPC fact layout remain consistent.
 
 ## Architecture
 
@@ -360,10 +867,10 @@ format completed reports. Application modules live in `growr_cli/`.
 growr.py
   settings.py     dotenv-loaded application settings and RPC selection
   solana/         RPC, SPL decoding, metadata, and holder reads
-  integrations/   Jupiter, Rugcheck, Dexscreener, Stonks, shared HTTP
-  analysis/       pure metric, pair-selection, and risk rules
+  integrations/   Jupiter, Rugcheck, Stonks, shared HTTP
+  analysis/       pure metric, social-presence, and risk rules
   scanners/       separate token, token-account, and wallet workflows
-  searchers/      Stonks and Dexscreener discovery workflows
+  searchers/      Stonks and Jupiter discovery workflows
   enrichment/     launch joins and direct-token provider context
   machine/        versioned JSON records, schema, serialization and errors
   output.py       choose a console renderer by scan type or search provider
@@ -388,7 +895,7 @@ The standard metadata PDA behavior and read-only RPC approach follow the [Solana
 
 - Token-2022 mint extensions are flagged by program type but not decoded in this first CLI version.
 - Largest token accounts can include LP pools, lockers, and burn accounts; holder concentration is therefore a triage signal, not a definitive ownership graph.
-- Jupiter, Rugcheck, and Dexscreener are optional context. Their failure does not make a valid on-chain scan fail.
+- Jupiter and Rugcheck are optional context. Their failure does not make a valid on-chain scan fail.
 - The tool does no recursive wallet clustering and no transaction decoding. That way lies a longer project.
 
 ## Development
@@ -432,6 +939,7 @@ For optional read-only live validation on Linux/macOS:
 ```bash
 python3 scripts/live_smoke.py
 python3 scripts/live_smoke.py --mint <MINT> --scans-only --max-requests 15
+python3 scripts/live_smoke.py --mint <MINT> --stonk --scans-only
 ```
 
 The harness uses configured services, makes at most 30 outbound requests

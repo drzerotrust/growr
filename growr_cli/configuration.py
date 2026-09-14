@@ -30,8 +30,11 @@ def _check_url(name, value) -> None:
         valid = False
     if not valid:
         raise ConfigurationError(
-            f"Invalid {name}; configure an HTTP(S) URL in .env "
-            "or adopt the default from .env.example"
+            (
+                "Invalid %s; configure an HTTP(S) URL in .env or adopt the "
+                "default from .env.example"
+            )
+            % name
         )
 
 
@@ -40,9 +43,9 @@ def _endpoint(name) -> None:
 
     value = getattr(settings, name)
     _check_url(name, value)
-    default = getattr(settings, f"DEFAULT_{name}").rstrip("/")
+    default = getattr(settings, "DEFAULT_%s" % name).rstrip("/")
     display = (
-        f"default {default}" if value == default else "configured (hidden)"
+        "default %s" % default if value == default else "configured (hidden)"
     )
     LOGGER.info("%s: %s", name, display)
 
@@ -53,7 +56,7 @@ def _key(name) -> bool:
     value = getattr(settings, name)
     if value in {"your_helius_api_key", "your_jupiter_api_key"}:
         raise ConfigurationError(
-            f"Replace the placeholder in {name} or leave it blank in .env"
+            "Replace the placeholder in %s or leave it blank in .env" % name
         )
     state = "configured (hidden)" if value else "unset"
     LOGGER.info("%s: %s", name, state)
@@ -113,6 +116,9 @@ def log_configuration(args, rpc_url, rpc_override) -> None:
         origin,
     )
     _log_timeout()
+    if args.scan_type == "search":
+        _search_configuration(args)
+        return
     if args.scan_type != "list" or args.on_chain:
         _rpc_configuration(rpc_url, rpc_override)
     else:
@@ -120,22 +126,45 @@ def log_configuration(args, rpc_url, rpc_override) -> None:
 
     if args.scan_type in {"wallet", "token-account"}:
         return
-    if args.scan_type == "list":
-        _endpoint("DEXSCREENER_V1_API_URL")
-        if not args.stonk:
-            return
+    if args.scan_type == "token" and args.stonk:
         _endpoint("STONKS_API_URL")
+        _endpoint("STONKS_HOLDERS_API_URL")
+        return
+    if args.scan_type == "list":
+        if args.stonk:
+            _endpoint("STONKS_API_URL")
         jupiter_enabled = True
     else:
-        _endpoint("DEXSCREENER_API_URL")
         if not args.no_rugcheck:
             _endpoint("RUGCHECK_API_URL")
         jupiter_enabled = not args.no_jupiter
     if jupiter_enabled:
-        if _key("JUPITER_API_KEY"):
-            _endpoint("JUPITER_API_URL")
-        else:
-            LOGGER.info(
-                "Jupiter enrichment requires JUPITER_API_KEY "
-                "(or JUP_API_KEY); coverage will be not_configured"
-            )
+        _jupiter_configuration(
+            required=args.scan_type == "list" and not args.stonk
+        )
+
+
+def _search_configuration(args) -> None:
+    """Validate only the provider selected for query discovery."""
+
+    LOGGER.info("RPC: unused for token search")
+    if args.provider == "stonks":
+        _endpoint("STONKS_API_URL")
+    else:
+        _jupiter_configuration(required=True)
+
+
+def _jupiter_configuration(required=False) -> None:
+    """Require a discovery key; allow optional scan context."""
+
+    if _key("JUPITER_API_KEY"):
+        _endpoint("JUPITER_API_URL")
+        return
+    if required:
+        raise ConfigurationError(
+            "Jupiter discovery requires JUPITER_API_KEY in .env"
+        )
+    LOGGER.info(
+        "Jupiter enrichment requires JUPITER_API_KEY "
+        "(or JUP_API_KEY); coverage will be not_configured"
+    )

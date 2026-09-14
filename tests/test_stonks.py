@@ -16,8 +16,21 @@ from growr_cli.searchers import StonksSearcher
 from tests.test_enrichment import MINT, OTHER, launch_report, providers_for
 
 
+def envelope(payload):
+    """Wrap listing fixture data in the public API's v1 envelope."""
+
+    if not isinstance(payload, dict):
+        return payload
+    data = {key: value for key, value in payload.items() if key != "pools"}
+    if "pools" in payload:
+        data["tokens"] = payload["pools"]
+    return {"data": data, "meta": {"generatedAt": "source-time"}}
+
+
 def response(payload):
-    return Mock(ok=True, status_code=200, json=Mock(return_value=payload))
+    return Mock(
+        ok=True, status_code=200, json=Mock(return_value=envelope(payload))
+    )
 
 
 def searcher(mode="recent", page=None, page_size=None, category=None):
@@ -47,7 +60,7 @@ def test_discovery_status_and_envelope(monkeypatch, pools):
     )
     report = searcher().search()
     assert report.findings.status == ("success" if pools else "no_data")
-    assert report.findings.tokens == payload
+    assert report.raw == envelope(payload)
     assert isinstance(report.findings.timestamp, float)
     assert get.call_args.kwargs["timeout"] > 0
 
@@ -110,9 +123,6 @@ def cli_dependencies(monkeypatch, argv):
     client = providers_for([MINT])
     monkeypatch.setattr(
         growr, "JupiterClient", Mock(return_value=client.jupiter)
-    )
-    monkeypatch.setattr(
-        growr, "DexscreenerClient", Mock(return_value=client.dexscreener)
     )
     rpc = Mock()
     monkeypatch.setattr(growr, "SolanaRpcClient", rpc)
@@ -206,10 +216,10 @@ def test_platform_query_parameters_and_envelope(monkeypatch, mode, page, size):
     )
     finder = searcher(mode, page, size)
     result = finder.search()
-    assert result.search_type == f"stonk-{mode}"
-    assert result.findings.tokens == payload
+    assert result.search_type == "stonk-%s" % mode
+    assert result.raw == envelope(payload)
     get.assert_called_once()
-    assert get.call_args.args[0] == f"{settings.STONKS_API_URL}/platform-pools"
+    assert get.call_args.args[0] == "%s/tokens" % settings.STONKS_API_URL
     assert get.call_args.kwargs["params"] == {
         "sort": mode,
         "page": page or 1,
@@ -217,17 +227,21 @@ def test_platform_query_parameters_and_envelope(monkeypatch, mode, page, size):
     }
 
 
-def test_recent_query_has_no_pagination(monkeypatch):
+def test_recent_query_uses_newest_sort_and_pagination(monkeypatch):
     get = Mock(return_value=response({"pools": []}))
     monkeypatch.setattr(
         "growr_cli.integrations.http.requests.Session.get", get
     )
     searcher().search()
-    assert get.call_args.args[0].endswith("/recent-launches")
-    assert get.call_args.kwargs["params"] is None
+    assert get.call_args.args[0].endswith("/tokens")
+    assert get.call_args.kwargs["params"] == {
+        "sort": "newest",
+        "page": 1,
+        "pageSize": 30,
+    }
 
 
-@pytest.mark.parametrize("mode", ["marketCap", "volume"])
+@pytest.mark.parametrize("mode", ["recent", "marketCap", "volume"])
 @pytest.mark.parametrize(
     "category",
     ["xstock", "prestock", "custom", "collectibles", "currencies", "leverage"],
@@ -267,18 +281,15 @@ def test_category_cli_filters_server_query_and_preserves_results(
     monkeypatch.setattr(
         growr, "JupiterClient", Mock(return_value=providers.jupiter)
     )
-    monkeypatch.setattr(
-        growr, "DexscreenerClient", Mock(return_value=providers.dexscreener)
-    )
     rpc = Mock()
     monkeypatch.setattr(growr, "SolanaRpcClient", rpc)
 
     assert growr.main() == 0
 
     get.assert_called_once()
-    assert get.call_args.args[0].endswith("/platform-pools")
+    assert get.call_args.args[0].endswith("/tokens")
     assert get.call_args.kwargs["params"] == {
-        "sort": mode,
+        "sort": "newest" if mode == "recent" else mode,
         "page": 2,
         "pageSize": 5,
         "category": category,
@@ -287,7 +298,7 @@ def test_category_cli_filters_server_query_and_preserves_results(
     report = json.loads(output.out)
     assert report["request"]["options"]["mode"] == mode
     assert report["records"][0]["raw"]["jupiter"]["id"] == MINT
-    assert report["raw"]["discovery"] == original
+    assert report["raw"]["discovery"] == envelope(original)
     providers.get_jupiter_tokens.assert_called_once_with([MINT])
     rpc.assert_not_called()
     assert output.err == ""
@@ -296,10 +307,8 @@ def test_category_cli_filters_server_query_and_preserves_results(
 @pytest.mark.parametrize(
     "arguments",
     [
-        ["--stonk", "--category", "xstock"],
-        ["--stonk", "--stonk-search", "recent", "--category", "prestock"],
-        ["--boosted", "--category", "custom"],
-        ["--community-takeovers", "--category", "collectibles"],
+        ["jupiter", "--category", "custom"],
+        ["jupiter", "--category", "collectibles"],
         ["--stonk", "--stonk-search", "volume", "--category", "invalid"],
         ["--stonk", "--stonk-search", "marketCap", "--category"],
     ],
@@ -325,10 +334,9 @@ def test_invalid_category_options_fail_before_requests(
     "arguments",
     [
         ["--stonk", "--stonk-search", "bad"],
-        ["--stonk", "--page", "1"],
-        ["--stonk", "--stonk-search", "recent", "--page-size", "30"],
-        ["--boosted", "--page", "2"],
-        ["--community-takeovers", "--page-size", "10"],
+        ["--stonk", "--stonk-search", "recent", "--page-size", "101"],
+        ["jupiter", "--page", "2"],
+        ["jupiter", "--page-size", "10"],
         ["--stonk-search", "volume"],
         ["--stonk", "--stonk-search", "volume", "--page", "0"],
         ["--stonk", "--stonk-search", "marketCap", "--page", "-1"],
@@ -379,14 +387,12 @@ def test_platform_cli_enriches_only_page_preserves_order_and_ranking(
             {
                 "mint": MINT,
                 "symbol": "FIRST",
-                "marketCapUsd": 80,
-                "volume24hUsd": 70,
+                "market": {"marketCapUsd": 80, "volume24hUsd": 70},
             },
             {
                 "mint": OTHER,
                 "symbol": "SECOND",
-                "marketCapUsd": 60,
-                "volume24hUsd": 50,
+                "market": {"marketCapUsd": 60, "volume24hUsd": 50},
             },
         ],
         "featured": {"mint": "11111111111111111111111111111111"},
@@ -402,9 +408,6 @@ def test_platform_cli_enriches_only_page_preserves_order_and_ranking(
     monkeypatch.setattr(
         growr, "JupiterClient", Mock(return_value=client.jupiter)
     )
-    monkeypatch.setattr(
-        growr, "DexscreenerClient", Mock(return_value=client.dexscreener)
-    )
     rpc = Mock()
     monkeypatch.setattr(growr, "SolanaRpcClient", rpc)
     assert growr.main() == 0
@@ -418,7 +421,7 @@ def test_platform_cli_enriches_only_page_preserves_order_and_ranking(
             MINT,
             OTHER,
         ]
-        assert result["raw"]["discovery"] == original
+        assert result["raw"]["discovery"] == envelope(original)
         assert result["pagination"] == original["pagination"]
     else:
         assert output.index("6. FIRST") < output.index("7. SECOND")
@@ -427,7 +430,7 @@ def test_platform_cli_enriches_only_page_preserves_order_and_ranking(
             "Stonks Mcap $" if mode == "marketCap" else "Stonks 24h vol $"
         ) in output
         assert ("80 S" if mode == "marketCap" else "70 S") in output
-        assert "999 J" in output and "dexscreener=no_data" in output
+        assert "999 J" in output and "jupiter=success" in output
 
 
 @pytest.mark.parametrize("mode", ["marketCap", "volume"])
@@ -455,9 +458,6 @@ def test_platform_empty_page_and_error(monkeypatch, capsys, mode):
     monkeypatch.setattr(
         growr, "JupiterClient", Mock(return_value=providers.jupiter)
     )
-    monkeypatch.setattr(
-        growr, "DexscreenerClient", Mock(return_value=providers.dexscreener)
-    )
     assert growr.main() == 0
     assert not providers.mock_calls
     assert "No pools on this page." in capsys.readouterr().out
@@ -473,7 +473,7 @@ def test_platform_optional_rpc(monkeypatch, capsys, mode):
         ["--json", "list", "--stonk", "--stonk-search", mode, "--on-chain"],
     )
     growr.StonksSearcher.return_value.search.return_value.search_type = (
-        f"stonk-{mode}"
+        "stonk-%s" % mode
     )
     scanner = Mock(
         return_value=Mock(

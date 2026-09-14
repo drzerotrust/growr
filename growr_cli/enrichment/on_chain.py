@@ -37,23 +37,19 @@ class OnChainEnricher:
             )
         counts = Counter(result.status for result in results.values())
         summary = ", ".join(
-            f"{status}={count}" for status, count in sorted(counts.items())
+            "%s=%s" % (status, count)
+            for status, count in sorted(counts.items())
         )
         log = LOGGER.warning if counts["failed"] else LOGGER.info
         log("RPC coverage: %s", summary)
         return results
 
     def enrich(self, report) -> SearchReport:
-        """Attach verification to a multichain Dexscreener feed."""
+        """Attach verification to Jupiter token discovery."""
 
         tokens = report.findings.tokens
-        eligible = [
-            token for token in tokens if token.get("chainId") == "solana"
-        ]
         mints = [
-            token["tokenAddress"]
-            for token in eligible
-            if isinstance(token.get("tokenAddress"), str)
+            token["id"] for token in tokens if isinstance(token.get("id"), str)
         ]
         results = self.scan_mints(mints)
         for token in tokens:
@@ -68,13 +64,9 @@ class OnChainEnricher:
         return report
 
     def _result(self, token, results) -> EnrichmentResult:
-        """Explain unsupported chains and absent mint identities."""
+        """Explain absent mint identities before RPC lookup."""
 
-        if token.get("chainId") != "solana":
-            return EnrichmentResult(
-                "skipped", None, detail="Only Solana RPC is supported"
-            )
-        mint = token.get("tokenAddress")
+        mint = token.get("id")
         if not isinstance(mint, str):
             return EnrichmentResult(
                 "failed", None, detail="Missing Solana mint address"
@@ -100,5 +92,5 @@ class OnChainEnricher:
             return EnrichmentResult(
                 "failed",
                 datetime.now(timezone.utc).isoformat(),
-                detail=f"On-chain scan failed ({type(error).__name__})",
+                detail="On-chain scan failed (%s)" % type(error).__name__,
             )

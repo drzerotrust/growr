@@ -1,8 +1,9 @@
-"""Discoverable JSON Schema for growr's version 1 machine contract."""
+"""Discoverable JSON Schema for growr's version 2 machine contract."""
 
 from typing import Any
 
 from growr_cli.machine.schema_records import record_variants
+from growr_cli.machine.schema_rewards import reward_metrics
 
 
 def obj(properties, required=None, *, additional=False) -> dict[str, Any]:
@@ -74,7 +75,7 @@ def response_schema() -> dict[str, Any]:
             },
             "identity": identity,
             "facts": values,
-            "metrics": values,
+            "metrics": {**values, "properties": reward_metrics()},
             "findings": {"type": "array", "items": finding},
             "social": {"anyOf": [social, {"type": "null"}]},
             "coverage": outcomes,
@@ -133,7 +134,7 @@ def response_schema() -> dict[str, Any]:
     )
     schema = obj(
         {
-            "schema_version": {"const": "1.0"},
+            "schema_version": {"const": "2.2"},
             "tool": obj({"name": {"const": "growr"}, "version": text}),
             "run": obj(
                 {
@@ -151,6 +152,7 @@ def response_schema() -> dict[str, Any]:
                             "wallet",
                             "token-account",
                             "list",
+                            "search",
                             None,
                         ]
                     },
@@ -181,7 +183,7 @@ def response_schema() -> dict[str, Any]:
     schema.update(
         {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
-            "title": "growr response 1.0",
+            "title": "growr response 2.2",
             "$defs": {
                 "coverage": outcome,
                 "record": record,

@@ -2,7 +2,7 @@
 
 from growr_cli.models import ScanReport
 from growr_cli.renderers.base import BaseConsoleRenderer
-from growr_cli.renderers.listings import DexscreenerConsoleRenderer
+from growr_cli.renderers.jupiter import JupiterConsoleRenderer
 from growr_cli.renderers.scans import (
     TokenAccountConsoleRenderer,
     TokenConsoleRenderer,
@@ -17,7 +17,7 @@ _SCAN_RENDERERS = {
 }
 _LIST_RENDERERS = {
     "stonk": StonkfunConsoleRenderer,
-    "dexscreener": DexscreenerConsoleRenderer,
+    "jupiter": JupiterConsoleRenderer,
 }
 
 

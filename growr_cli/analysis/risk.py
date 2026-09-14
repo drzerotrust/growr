@@ -97,8 +97,10 @@ def holder_finding(holders) -> Finding:
     return Finding(
         severity,
         "Top holder concentration",
-        f"The largest reported token accounts hold {percentage:.2f}% "
-        f"of supply.",
+        (
+            "The largest reported token accounts hold %.2f%% of supply."
+            % percentage
+        ),
         "on-chain RPC",
     )
 

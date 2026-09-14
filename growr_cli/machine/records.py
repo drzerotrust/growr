@@ -46,9 +46,13 @@ def scan_record(data, provider_data=None, include_raw=False) -> dict[str, Any]:
     metrics = {
         name: {"source": source, "scope": scope, "values": summary[name]}
         for name, source, scope in (
-            ("market", "dexscreener", "pool"),
             ("jupiter", "jupiter", "token"),
             ("rugcheck", "rugcheck", "token"),
+            ("stonks_market", "stonks", "pool"),
+            ("stonks_holders", "stonks", "token"),
+            ("stonks_burns", "stonks", "token"),
+            ("stonks_rewards", "stonks", "token"),
+            ("reward_comparison", "growr", "token"),
         )
         if name in summary
     }
@@ -65,16 +69,7 @@ def scan_record(data, provider_data=None, include_raw=False) -> dict[str, Any]:
         }
     outcomes = [coverage("rpc", data["scan_type"], "success")]
     outcomes.extend(
-        coverage(
-            item["provider"].lower(),
-            "token_context",
-            item["status"],
-            item["detail"],
-            mapping(provider_data.get(item["provider"].lower())).get(
-                "fetched_at"
-            ),
-        )
-        for item in data["providers"]
+        _provider_coverage(item, provider_data) for item in data["providers"]
     )
     _scan_details(summary, outcomes)
     kind = data["scan_type"]
@@ -87,7 +82,13 @@ def scan_record(data, provider_data=None, include_raw=False) -> dict[str, Any]:
             {"mint": account.get("mint"), "owner": account.get("owner")}
         )
     result = record(
-        kind, identity, facts, metrics, data["findings"], None, outcomes
+        kind,
+        identity,
+        facts,
+        metrics,
+        data["findings"],
+        data.get("social"),
+        outcomes,
     )
     if include_raw:
         result["raw"] = {
@@ -96,19 +97,47 @@ def scan_record(data, provider_data=None, include_raw=False) -> dict[str, Any]:
     return result
 
 
+def _provider_coverage(item, provider_data) -> dict[str, Any]:
+    """Identify endpoint outcomes without grouping distinct requests."""
+
+    source = item["provider"].lower()
+    operation = item.get("operation", "token_context")
+    key = (
+        source
+        if operation == "token_context"
+        else "%s_%s" % (source, operation)
+    )
+    return coverage(
+        source,
+        operation,
+        item["status"],
+        item["detail"],
+        mapping(provider_data.get(key)).get("fetched_at"),
+    )
+
+
 def _scan_details(summary, outcomes) -> None:
     inventory = mapping(summary.get("token_accounts"))
     for program in ("spl_token", "token_2022"):
-        key = f"{program}_error"
+        key = "%s_error" % program
         if key in inventory:
             outcomes.append(
                 coverage(
                     "rpc",
-                    f"{program}_inventory",
+                    "%s_inventory" % program,
                     "failed",
                     "Inventory read failed",
                 )
             )
+    if inventory.get("unparsed_account_count", 0):
+        outcomes.append(
+            coverage(
+                "rpc",
+                "wallet_inventory_decode",
+                "partial",
+                "Some returned token-account entries could not be validated",
+            )
+        )
     metadata = mapping(summary.get("metadata"))
     if metadata:
         status = "partial" if metadata.get("warning") else "success"
@@ -139,8 +168,8 @@ def listing_record(
     analytics = mapping(item.get("analytics"))
     stonks = source == "stonks"
     identity = {
-        "chain": "solana" if stonks else item.get("chainId"),
-        "mint": item.get("mint") if stonks else item.get("tokenAddress"),
+        "chain": "solana",
+        "mint": item.get("mint") if stonks else item.get("id"),
         "pool": item.get("pool") if stonks else None,
         "name": item.get("name"),
         "symbol": item.get("symbol"),
@@ -177,7 +206,7 @@ def listing_record(
         coverage(source, "discovery", "success", fetched_at=fetched_at)
     ]
     _normalize_listing_text(identity, facts, outcomes)
-    for provider in ("jupiter", "dexscreener", "on_chain"):
+    for provider in ("jupiter", "on_chain"):
         result = mapping(analytics.get(provider))
         if result:
             outcomes.append(
@@ -206,7 +235,7 @@ def listing_record(
     if include_raw:
         result["raw"] = {
             provider: mapping(analytics.get(provider)).get("data")
-            for provider in ("jupiter", "dexscreener")
+            for provider in ("jupiter",)
             if provider in analytics
         }
     return result
@@ -240,7 +269,7 @@ def _normalize_listing_text(identity, facts, outcomes) -> None:
                         "growr",
                         "normalization",
                         "partial",
-                        f"Invalid text field replaced with null: {key}",
+                        "Invalid text field replaced with null: %s" % key,
                     )
                 )
 
@@ -258,7 +287,7 @@ def report_records(
         )
     findings = report.findings
     stonks = findings.source == "stonk"
-    source = "stonks" if stonks else "dexscreener"
+    source = "stonks" if stonks else findings.source
     envelope = mapping(findings.tokens)
     items = envelope.get("pools", []) if stonks else findings.tokens
 

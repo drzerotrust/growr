@@ -29,7 +29,7 @@ class RugcheckClient:
             report.
         """
 
-        url = f"{settings.RUGCHECK_API_URL}/tokens/{mint}/report"
+        url = "%s/tokens/%s/report" % (settings.RUGCHECK_API_URL, mint)
         data, error = self.http.get_json(url)
         if error:
             return None, error

@@ -3,16 +3,12 @@
 from collections import Counter
 from dataclasses import asdict
 
-from growr_cli.analysis.market import combine_metrics, select_launch_pair
+from growr_cli.analysis.market import combine_metrics
 from growr_cli.analysis.metrics import mapping
 from growr_cli.enrichment.on_chain import OnChainEnricher
 from growr_cli.enrichment.social import attach_social
-from growr_cli.integrations.dexscreener import (
-    pool_snapshot,
-)
-from growr_cli.integrations.dexscreener import snapshot as dex_snapshot
-from growr_cli.integrations.dexscreener import social_links as dex_links
 from growr_cli.integrations.jupiter import snapshot as jupiter_snapshot
+from growr_cli.integrations.jupiter import social_links as jupiter_links
 from growr_cli.integrations.stonks import snapshot as stonks_snapshot
 from growr_cli.integrations.stonks import social_links as stonks_links
 from growr_cli.logger import get_logger
@@ -26,7 +22,7 @@ def _log_coverage(provider, results) -> None:
 
     counts = Counter(result.status for result in results.values())
     summary = ", ".join(
-        f"{status}={count}" for status, count in sorted(counts.items())
+        "%s=%s" % (status, count) for status, count in sorted(counts.items())
     )
     log = LOGGER.warning if counts["failed"] else LOGGER.info
     log("%s coverage: %s", provider, summary)
@@ -38,13 +34,11 @@ class LaunchEnricher:
     def __init__(
         self,
         jupiter,
-        dexscreener,
         scan_token=None,
     ) -> None:
         """Configure providers and an optional read-only scanner."""
 
         self.jupiter = jupiter
-        self.dexscreener = dexscreener
         self.scan_token = scan_token
 
     def enrich(self, report) -> SearchReport:
@@ -70,9 +64,6 @@ class LaunchEnricher:
         LOGGER.info("Fetching Jupiter token data")
         jupiter = self.jupiter.get_tokens(mints)
         _log_coverage("Jupiter", jupiter)
-        LOGGER.info("Fetching Dexscreener pool data")
-        dex = self.dexscreener.get_tokens(mints)
-        _log_coverage("Dexscreener", dex)
         rpc = (
             OnChainEnricher(self.scan_token).scan_mints(mints)
             if self.scan_token is not None
@@ -84,41 +75,22 @@ class LaunchEnricher:
         for launch in launches:
             mint = launch["mint"]
             jup_data = mapping(jupiter[mint].data)
-            dex_data = dex[mint].data
-            pairs = dex_data if isinstance(dex_data, list) else []
-            selected = select_launch_pair(
-                [pool_snapshot(pair) for pair in pairs],
-                mint,
-                launch.get("pool"),
-            )
-            pair = selected.raw if selected is not None else {}
             launch["analytics"] = {
                 **mapping(launch.get("analytics")),
                 "jupiter": asdict(jupiter[mint]),
-                "dexscreener": {
-                    **asdict(dex[mint]),
-                    "selected_pair": pair or None,
-                },
                 "metrics": combine_metrics(
                     stonks_snapshot(launch),
                     jupiter_snapshot(jup_data),
-                    dex_snapshot(pair),
                 ),
                 "on_chain": asdict(rpc[mint]) if mint in rpc else None,
             }
             candidates = stonks_links(launch)
-            if dex[mint].status == "success":
-                for matching in pairs:
-                    identity = pool_snapshot(matching)
-                    if (
-                        identity.chain == "solana"
-                        and identity.base_mint == mint
-                    ):
-                        candidates.extend(dex_links(matching))
+            if jupiter[mint].status == "success":
+                candidates.extend(jupiter_links(jup_data))
             enriched = attach_social(
                 launch,
                 candidates,
-                {"stonks": "success", "dexscreener": dex[mint].status},
+                {"stonks": "success", "jupiter": jupiter[mint].status},
             )
             launch["analytics"] = enriched["analytics"]
         return report

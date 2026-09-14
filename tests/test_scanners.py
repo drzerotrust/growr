@@ -13,7 +13,11 @@ from growr_cli.scanners import (
     WalletScanner,
 )
 from growr_cli.solana_rpc import SPL_TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID
-from tests.conftest import make_mint_bytes, make_token_account_bytes
+from tests.conftest import (
+    make_mint_bytes,
+    make_rpc_token_account,
+    make_token_account_bytes,
+)
 
 MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 
@@ -92,8 +96,16 @@ def test_wallet_scan_isolates_per_program_errors() -> None:
         if program_id == SPL_TOKEN_PROGRAM_ID:
             raise RuntimeError("spl down")
         if program_id == TOKEN_2022_PROGRAM_ID:
-            return [object(), object()]
-        raise AssertionError(f"unexpected program {program_id}")
+            return [
+                make_rpc_token_account(
+                    Pubkey.from_bytes(bytes([number]) * 32),
+                    wallet,
+                    program_id,
+                    extended=True,
+                )
+                for number in (1, 2)
+            ]
+        raise AssertionError("unexpected program %s" % program_id)
 
     rpc.get_token_accounts_by_owner.side_effect = fake_get_token_accounts
     scanner = WalletScanner(rpc, "test RPC")
@@ -103,6 +115,8 @@ def test_wallet_scan_isolates_per_program_errors() -> None:
     assert report.summary["token_accounts"]["spl_token_account_count"] is None
     assert report.summary["token_accounts"]["token_2022_account_count"] == 2
     assert report.summary["token_accounts"]["total_account_count"] == 2
+    assert len(report.summary["token_accounts"]["entries"]) == 2
+    assert report.summary["token_accounts"]["unparsed_account_count"] == 0
     assert any(
         finding.label == "SPL token inventory incomplete"
         for finding in report.findings

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from solders.account import Account
+from solders.rpc.responses import RpcKeyedAccount
+
 
 def make_mint_bytes(
     *,
@@ -52,3 +55,16 @@ def make_token_account_bytes(
 def make_borsh_string(text) -> bytes:
     encoded = text.encode("utf-8")
     return len(encoded).to_bytes(4, "little") + encoded
+
+
+def make_rpc_token_account(
+    address, wallet, program, *, amount=50, state=1, extended=False
+) -> RpcKeyedAccount:
+    """Wrap token bytes in the SDK's wallet inventory shape."""
+
+    data = bytearray(make_token_account_bytes(amount=amount, state=state))
+    data[32:64] = bytes(wallet)
+    if extended:
+        # Token-2022 account tag followed by an ImmutableOwner TLV.
+        data += b"\x02\x07\x00\x00\x00"
+    return RpcKeyedAccount(address, Account(1, bytes(data), program))

@@ -23,7 +23,7 @@ def main() -> int:
         ("pytest", "-q"),
     )
     for arguments in checks:
-        print(f"Running: {' '.join(arguments)}", flush=True)
+        print("Running: %s" % " ".join(arguments), flush=True)
         result = subprocess.run(
             [sys.executable, "-m", *arguments],
             cwd=PROJECT_ROOT,

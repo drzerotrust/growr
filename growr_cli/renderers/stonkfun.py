@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from growr_cli.analysis.metrics import mapping, number
+from growr_cli.analysis.metrics import mapping
 from growr_cli.renderers.base import terminal_text
 from growr_cli.renderers.listings import ListConsoleRenderer
 
@@ -13,6 +13,9 @@ class StonkfunConsoleRenderer(ListConsoleRenderer):
     def _render_listing(self, report) -> None:
         """Build and render each listing table."""
 
+        if report.search_type == "stonk-search":
+            self._render_query(report)
+            return
         launches = mapping(report.findings.tokens).get("pools", [])
         platform = report.search_type != "stonk-recent"
         start = self._listing_heading(report)
@@ -33,7 +36,7 @@ class StonkfunConsoleRenderer(ListConsoleRenderer):
         for index, launch in enumerate(launches, start):
             mint = str(launch["mint"])
             symbol = terminal_text(launch.get("symbol", "?"))[:12]
-            label = f"{index}. {symbol} {mint[:4]}…{mint[-4:]}"
+            label = "%s. %s %s…%s" % (index, symbol, mint[:4], mint[-4:])
             analytics = launch["analytics"]
 
             market_rows.append(
@@ -54,23 +57,59 @@ class StonkfunConsoleRenderer(ListConsoleRenderer):
         )
         self._social_note()
 
+    def _render_query(self, report) -> None:
+        """Show full mint addresses for a later user-selected scan."""
+
+        start = self._listing_heading(report)
+        pools = mapping(report.findings.tokens).get("pools", [])
+        if not pools:
+            print("No matching pools on this page.")
+            return
+        rows = []
+        socials = []
+        for index, pool in enumerate(pools, start):
+            market = pool["analytics"]["metrics"]["market"]
+            mint = pool["mint"]
+            rows.append(
+                [
+                    str(index),
+                    pool.get("name", "—"),
+                    pool.get("symbol", "—"),
+                    mint,
+                    self._metric_cell(market.get("price_usd"), price=True),
+                    self._metric_cell(market.get("market_cap_usd")),
+                    self._metric_cell(market.get("stonks_volume_24h_usd")),
+                ]
+            )
+            socials.extend(self._social_rows([str(index), mint], pool))
+        self._table(
+            ["#", "Name", "Symbol", "Mint", "Price $", "Mcap $", "24h vol $"],
+            rows,
+        )
+        print("Source: S=Stonks. — = unknown; no RPC verification performed.")
+        self._heading("Social presence")
+        self._table(
+            ["#", "Mint", "Social", "Website", "Social links"], socials
+        )
+        self._social_note()
+
     def _listing_heading(self, report) -> int:
         """Derive row numbers from the returned pagination."""
 
         envelope = mapping(report.findings.tokens)
         launches = envelope.get("pools", [])
-        platform = report.search_type != "stonk-recent"
         mode = {
-            "stonk-recent": "recent launches",
+            "stonk-recent": "newest tokens",
             "stonk-marketCap": "market cap",
             "stonk-volume": "volume",
+            "stonk-search": "search",
         }[report.search_type]
-        heading = f"Stonks {mode} | {len(launches)} results"
+        heading = "Stonks %s | %s results" % (mode, len(launches))
         start = 1
         pagination = mapping(envelope.get("pagination"))
-        if platform and pagination:
+        if pagination:
             heading += " | " + ", ".join(
-                f"{label}: {terminal_text(pagination.get(key, '—'))}"
+                "%s: %s" % (label, terminal_text(pagination.get(key, "—")))
                 for key, label in (
                     ("page", "page"),
                     ("totalPages", "pages"),
@@ -104,11 +143,7 @@ class StonkfunConsoleRenderer(ListConsoleRenderer):
         activity = metrics["activity"]["5m"]
         jup_activity = activity["jupiter"]
         change = jup_activity.get("priceChange")
-        if number(mapping(change).get("value")) is None:
-            change = activity["dexscreener"].get("priceChange")
         liquidity = market["token_liquidity_usd"]
-        if liquidity["value"] is None:
-            liquidity = market["pool_liquidity_usd"]
         row = [
             label,
             self._metric_cell(market.get("price_usd"), price=True),
@@ -156,19 +191,18 @@ class StonkfunConsoleRenderer(ListConsoleRenderer):
 
         results = {
             "jupiter": analytics["jupiter"],
-            "dexscreener": analytics["dexscreener"],
         }
         if analytics["on_chain"] is not None:
             results["rpc"] = analytics["on_chain"]
 
         statuses = []
         for provider, result in results.items():
-            status = f"{provider}={result['status']}"
+            status = "%s=%s" % (provider, result["status"])
             if result["status"] in {"failed", "not_configured"}:
-                status += f" ({terminal_text(result['detail'])})"
+                status += " (%s)" % terminal_text(result["detail"])
             statuses.append(status)
 
-        return f"  {label}: {', '.join(statuses)}"
+        return "  %s: %s" % (label, ", ".join(statuses))
 
     def _render_tables(
         self,
@@ -184,7 +218,7 @@ class StonkfunConsoleRenderer(ListConsoleRenderer):
             "Token",
             "Price $",
             "Mcap $",
-            "Liquidity $",
+            "Token liquidity $",
             "5m Δ",
             "5m buy $",
             "5m sell $",
@@ -221,8 +255,8 @@ class StonkfunConsoleRenderer(ListConsoleRenderer):
                 "accounts. Token-2022 extensions are not decoded."
             )
         print(
-            "Sources: J=Jupiter, D=Dexscreener, S=Stonks, R=RPC. D "
-            "liquidity is for the selected pool."
+            "Sources: J=Jupiter, S=Stonks, R=RPC. "
+            "Liquidity is Jupiter-reported token liquidity."
         )
         print(
             "— = unknown. Provider audit fields and reported taxes are not "

@@ -6,63 +6,65 @@ from unittest.mock import Mock
 import pytest
 
 import growr
+from growr_cli import settings
 from growr_cli.enrichment.on_chain import OnChainEnricher
 from growr_cli.models import ScanReport
-from growr_cli.searchers import DexscreenerTokenSearcher
+from growr_cli.searchers import JupiterTokenSearcher
 from tests.test_enrichment import MINT, OTHER
 from tests.test_machine import STAMP, validate
 
 
+@pytest.fixture(autouse=True)
+def jupiter_key(monkeypatch):
+    monkeypatch.setattr(settings, "JUPITER_API_KEY", "synthetic-key")
+
+
 @pytest.mark.parametrize(
-    ("arguments", "stonks", "boosted"),
+    ("arguments", "stonks"),
     [
-        (["stonks"], True, False),
-        (["dexscreener"], False, True),
-        (["dexcreener"], False, True),
-        (["dexscreener", "--community-takeovers"], False, False),
-        (["--boosted"], False, True),
+        (["stonks"], True),
+        (["--stonk"], True),
+        (["jupiter"], False),
+        (["jupiter", "--jupiter-search", "toptraded"], False),
     ],
 )
-def test_provider_selection(arguments, stonks, boosted):
+def test_provider_selection(arguments, stonks):
     parser = growr.build_parser()
     args = parser.parse_args(["list", *arguments, "--on-chain"])
     growr._validate_search_arguments(parser, args)
     assert args.stonk == stonks
-    assert args.boosted == boosted
     assert args.on_chain
 
 
 @pytest.mark.parametrize(
     "arguments",
     [
-        ["stonks", "--boosted"],
-        ["stonks", "--community-takeovers"],
-        ["dexscreener", "--stonk"],
-        ["dexscreener", "--page", "2"],
-        ["dexscreener", "--category", "xstock"],
-        ["dexscreener", "--stonk-search", "volume"],
+        ["stonks", "--query", "JUP"],
+        ["stonks", "--jupiter-search", "recent"],
+        ["jupiter", "--stonk"],
+        ["jupiter", "--page", "2"],
+        ["jupiter", "--category", "xstock"],
+        ["jupiter", "--stonk-search", "volume"],
     ],
 )
 def test_conflicting_provider_options_fail_before_network(arguments):
     parser = growr.build_parser()
-    args = parser.parse_args(["list", *arguments])
     with pytest.raises(SystemExit) as error:
+        args = parser.parse_args(["list", *arguments])
         growr._validate_search_arguments(parser, args)
     assert error.value.code == 2
 
 
 @pytest.mark.parametrize("json_mode", [False, True])
-def test_dex_verification_filters_chains_and_closes_rpc(
+def test_jupiter_verification_deduplicates_and_closes_rpc(
     monkeypatch, capsys, json_mode
 ):
     tokens = [
-        {"chainId": "solana", "tokenAddress": MINT},
-        {"chainId": "ethereum", "tokenAddress": MINT},
-        {"chainId": "solana", "tokenAddress": MINT},
-        {"chainId": "solana", "tokenAddress": "invalid"},
-        {"chainId": "solana"},
-        {"chainId": "solana", "tokenAddress": OTHER},
-        {"tokenAddress": MINT},
+        {"id": MINT},
+        {"id": MINT},
+        {"id": "invalid"},
+        {},
+        {"id": OTHER},
     ]
     get = Mock(return_value=Mock(ok=True, json=Mock(return_value=tokens)))
     monkeypatch.setattr(
@@ -91,7 +93,7 @@ def test_dex_verification_filters_chains_and_closes_rpc(
     flags = ["--json", "--include-raw"] if json_mode else []
     monkeypatch.setattr(
         "sys.argv",
-        ["growr.py", *flags, "list", "dexscreener", "--on-chain"],
+        ["growr.py", *flags, "list", "jupiter", "--on-chain"],
     )
     assert growr.main() == 0
     captured = capsys.readouterr()
@@ -135,10 +137,10 @@ def test_dex_verification_filters_chains_and_closes_rpc(
     assert records[2]["on_chain"] is None
 
 
-@pytest.mark.parametrize("tokens", [[], [{"chainId": "ethereum"}]])
+@pytest.mark.parametrize("tokens", [[], [{}]])
 def test_no_eligible_mints_never_invoke_rpc(tokens):
     discovery = Mock(discover=Mock(return_value=tokens))
-    report = DexscreenerTokenSearcher(discovery).search(boosted=True)
+    report = JupiterTokenSearcher(discovery).search()
     scan = Mock()
     assert OnChainEnricher(scan).enrich(report) is report
     scan.assert_not_called()

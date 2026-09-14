@@ -56,6 +56,22 @@ def test_jupiter_mismatch_is_no_data() -> None:
     assert error is None
 
 
+def test_single_jupiter_id_takes_precedence_over_aliases():
+    client = _client()
+    client.session.get = Mock(
+        return_value=_json_response(
+            [
+                {"id": "wrong", "mint": "requested", "address": "requested"},
+                {"id": "requested", "usdPrice": 0},
+            ]
+        )
+    )
+    assert client.get_jupiter_token("requested")[0] == {
+        "id": "requested",
+        "usdPrice": 0,
+    }
+
+
 def test_jupiter_without_key() -> None:
     client = ProviderClient(timeout_seconds=5, jupiter_api_key=None)
     token, error = client.get_jupiter_token("mint")
@@ -102,37 +118,6 @@ def test_provider_urls_come_from_settings(monkeypatch) -> None:
     )
 
 
-def test_dexscreener_filters_solana_pairs() -> None:
-    client = _client()
-    client.session.get = Mock(
-        return_value=_json_response(
-            {
-                "pairs": [
-                    {"chainId": "solana", "pairAddress": "ok"},
-                    {"chainId": "ethereum", "pairAddress": "nope"},
-                ]
-            }
-        )
-    )
-
-    pairs, error = client.get_dexscreener_pairs("mint")
-
-    assert error is None
-    assert pairs == [{"chainId": "solana", "pairAddress": "ok"}]
-
-
-def test_dexscreener_non_list_pairs() -> None:
-    client = _client()
-    client.session.get = Mock(
-        return_value=_json_response({"pairs": {"oops": True}})
-    )
-
-    pairs, error = client.get_dexscreener_pairs("mint")
-
-    assert pairs == []
-    assert error == "Dexscreener returned an unexpected response shape"
-
-
 def test_http_error() -> None:
     client = _client()
     client.session.get = Mock(
@@ -160,35 +145,18 @@ def test_request_exception() -> None:
     assert "secret-key" not in str(error)
 
 
-@pytest.mark.parametrize(
-    ("provider", "size"), [("jupiter", 100), ("dexscreener", 30)]
-)
-def test_enrichment_batches_deduplicate_and_keep_failed_batches(
-    provider, size
-):
+def test_enrichment_batches_deduplicate_and_keep_failed_batches():
+    size = 100
     client = _client()
-    mints = [f"mint{i}" for i in range(size + 1)]
-    item = (
-        {"id": mints[0]}
-        if provider == "jupiter"
-        else {
-            "chainId": "solana",
-            "baseToken": {"address": mints[0]},
-            "pairAddress": "pool",
-        }
-    )
+    mints = ["mint%s" % i for i in range(size + 1)]
+    item = {"id": mints[0]}
     client.session.get = Mock(
         side_effect=[
             _json_response([item]),
             _json_response({}, ok=False, status_code=429),
         ]
     )
-    method = (
-        client.get_jupiter_tokens
-        if provider == "jupiter"
-        else client.get_dexscreener_tokens
-    )
-    result = method([*mints, mints[0]])
+    result = client.get_jupiter_tokens([*mints, mints[0]])
     assert list(result) == mints
     assert result[mints[0]].status == "success"
     assert result[mints[1]].status == "no_data"
@@ -196,11 +164,7 @@ def test_enrichment_batches_deduplicate_and_keep_failed_batches(
     assert result[mints[-1]].detail == "HTTP 429"
     assert client.session.get.call_count == 2
     call = client.session.get.call_args_list[0]
-    addresses = (
-        call.kwargs["params"]["query"]
-        if provider == "jupiter"
-        else call.args[0].rsplit("/", 1)[-1]
-    )
+    addresses = call.kwargs["params"]["query"]
     assert len(addresses.split(",")) == size
     assert call.kwargs["timeout"] == 5
 
@@ -221,44 +185,11 @@ def test_batch_jupiter_accepts_only_exact_id():
     }
 
 
-def test_batch_dex_filters_quote_and_chain_and_uses_v1_setting(monkeypatch):
-    monkeypatch.setattr(
-        settings, "DEXSCREENER_V1_API_URL", "https://dex.example"
-    )
-    client = _client()
-    client.session.get = Mock(
-        return_value=_json_response(
-            [
-                {
-                    "chainId": "solana",
-                    "baseToken": {"address": "other"},
-                    "quoteToken": {"address": "mint"},
-                },
-                {"chainId": "ethereum", "baseToken": {"address": "mint"}},
-                {
-                    "chainId": "solana",
-                    "baseToken": {"address": "mint"},
-                    "pairAddress": "correct",
-                },
-            ]
-        )
-    )
-    result = client.get_dexscreener_tokens(["mint"])["mint"]
-    assert result.status == "success"
-    assert len(result.data) == 1
-    assert result.data[0]["pairAddress"] == "correct"
-    assert (
-        client.session.get.call_args.args[0]
-        == "https://dex.example/tokens/v1/solana/mint"
-    )
-
-
 @pytest.mark.parametrize("payload", [None, {}, {"pairs": []}, ["bad"]])
 def test_batch_malformed_response_is_failed(payload):
     client = _client()
     client.session.get = Mock(return_value=_json_response(payload))
     assert client.get_jupiter_tokens(["mint"])["mint"].status == "failed"
-    assert client.get_dexscreener_tokens(["mint"])["mint"].status == "failed"
 
 
 def test_missing_jupiter_key_and_empty_batches_make_no_requests():
@@ -268,7 +199,6 @@ def test_missing_jupiter_key_and_empty_batches_make_no_requests():
         client.get_jupiter_tokens(["mint"])["mint"].status == "not_configured"
     )
     assert client.get_jupiter_tokens([]) == {}
-    assert client.get_dexscreener_tokens([]) == {}
     client.session.get.assert_not_called()
 
 

@@ -12,7 +12,6 @@ from jsonschema import Draft202012Validator, FormatChecker
 from solders.pubkey import Pubkey
 
 import growr
-from growr_cli.integrations.dexscreener import DexscreenerClient
 from growr_cli.integrations.jupiter import JupiterClient
 from growr_cli.integrations.rugcheck import report_summary
 from growr_cli.machine.schema import response_schema
@@ -72,7 +71,7 @@ def test_rpc_http_errors_redact_other_credential_names(key_name):
     response = httpx.Response(
         403,
         request=request,
-        text=f"Access denied: {key_name}={secret}",
+        text="Access denied: %s=%s" % (key_name, secret),
     )
     error = httpx.HTTPStatusError(
         "forbidden", request=request, response=response
@@ -82,10 +81,10 @@ def test_rpc_http_errors_redact_other_credential_names(key_name):
 
 def test_rpc_override_stays_hidden_in_partial_wallet_json(monkeypatch, capsys):
     secret = "synthetic-path-credential"
-    endpoint = f"https://rpc.example/{secret}"
+    endpoint = "https://rpc.example/%s" % secret
     request = httpx.Request("POST", endpoint)
     response = httpx.Response(
-        403, request=request, text=f"Forbidden request to {endpoint}"
+        403, request=request, text="Forbidden request to %s" % endpoint
     )
     error = httpx.HTTPStatusError(
         "forbidden", request=request, response=response
@@ -117,37 +116,33 @@ def test_token_console_neutralizes_untrusted_metadata(capsys):
     assert "\x07" not in output
 
 
-@pytest.mark.parametrize("provider", ["jupiter", "dexscreener"])
-def test_malformed_single_token_responses_are_failed_coverage(provider):
+def test_malformed_single_token_responses_are_failed_coverage():
     http = Mock(
         get_json=Mock(return_value=({"error": "service unavailable"}, None))
     )
-    if provider == "jupiter":
-        result = JupiterClient(http, "synthetic-key").get_token(MINT)
-    else:
-        result = DexscreenerClient(http).get_pairs(MINT)
+    result = JupiterClient(http, "synthetic-key").get_token(MINT)
     assert result.status == "failed"
 
 
 def test_discovery_social_links_produce_schema_valid_json(monkeypatch, capsys):
+    monkeypatch.setattr(
+        growr.settings, "JUPITER_API_KEY", "synthetic-review-key"
+    )
     tokens = [
         {
-            "chainId": "solana",
-            "tokenAddress": MINT,
-            "links": [
-                {"label": "Website", "url": "https://project.example/a b"}
-            ],
+            "id": MINT,
+            "website": "https://project.example/a b",
+            "twitter": "https://x.com/project",
         }
     ]
     monkeypatch.setattr(
         "growr_cli.integrations.http.requests.Session.get",
         Mock(return_value=Mock(ok=True, json=Mock(return_value=tokens))),
     )
-    monkeypatch.setattr(
-        "sys.argv", ["growr.py", "--json", "list", "dexscreener"]
-    )
+    monkeypatch.setattr("sys.argv", ["growr.py", "--json", "list", "jupiter"])
     assert growr.main() == 0
     document = json.loads(capsys.readouterr().out)
+    assert document["records"][0]["social"]["score"] == 40
     for link in document["records"][0]["social"]["links"]:
         assert not any(character.isspace() for character in link["url"])
     Draft202012Validator(

@@ -51,7 +51,7 @@ def format_rpc_error(error, method) -> str:
 
     cause = _root_cause(error)
     details = _http_error_details(cause) or type(cause).__name__
-    return f"{method} failed via RPC ({details})"
+    return "%s failed via RPC (%s)" % (method, details)
 
 
 def _root_cause(error) -> BaseException:
@@ -73,7 +73,7 @@ def _http_error_details(error) -> str | None:
             reason = HTTPStatus(code).phrase
         except ValueError:
             reason = "Unknown status"
-        return f"HTTP {code} {reason}"
+        return "HTTP %s %s" % (code, reason)
     if isinstance(error, httpx.ConnectError):
         return "connection error"
     if isinstance(error, httpx.TimeoutException):

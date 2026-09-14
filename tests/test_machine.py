@@ -45,7 +45,7 @@ def output_for(report, *command, raw=False):
 def test_scan_records_have_consistent_envelope(kind, raw):
     report = ScanReport(kind, MINT, "RPC", STAMP, summary={"sol_balance": 0})
     document = output_for(report, kind.replace("_", "-"), MINT, raw=raw)
-    assert document["schema_version"] == "1.0"
+    assert document["schema_version"] == "2.2"
     assert document["status"] == "success"
     record = document["records"][0]
     assert record["kind"] == kind
@@ -62,11 +62,10 @@ def test_scan_records_have_consistent_envelope(kind, raw):
 )
 def test_stonks_schema_and_partial_status(mode, outcome):
     report = launch_report()
-    report.search_type = f"stonk-{mode}"
+    report.search_type = "stonk-%s" % mode
     client = providers_for([MINT])
-    client.jupiter.get_tokens.return_value[MINT].fetched_at = STAMP
-    client.dexscreener.get_tokens.return_value[MINT] = EnrichmentResult(
-        outcome, STAMP, []
+    client.jupiter.get_tokens.return_value[MINT] = EnrichmentResult(
+        outcome, STAMP, {"id": MINT} if outcome == "success" else None
     )
     enricher(client).enrich(report)
     document = output_for(report, "list", "--stonk", "--stonk-search", mode)
@@ -79,13 +78,13 @@ def test_stonks_schema_and_partial_status(mode, outcome):
     assert "raw" not in document["records"][0]
 
 
-@pytest.mark.parametrize("source", ["stonk", "dexscreener"])
+@pytest.mark.parametrize("source", ["stonk", "jupiter"])
 def test_empty_discovery_is_a_valid_no_data_result(source):
     tokens = {"pools": []} if source == "stonk" else []
     report = SearchReport(
         "recent", TokenSearches(tokens, 0.0, source, "no_data")
     )
-    flags = ["--stonk"] if source == "stonk" else ["--boosted"]
+    flags = ["--stonk"] if source == "stonk" else ["jupiter"]
     document = output_for(report, "list", *flags)
     assert document["status"] == "no_data"
     assert document["records"] == []
@@ -123,35 +122,30 @@ def test_skipped_and_no_data_providers_do_not_mark_partial():
         MINT,
         "RPC",
         STAMP,
-        providers=[ProviderStatus("Dexscreener", "no_data", "No pair")],
+        providers=[ProviderStatus("Jupiter", "no_data", "No token")],
     )
-    document = output_for(
-        report, "token", MINT, "--no-jupiter", "--no-rugcheck"
-    )
+    document = output_for(report, "token", MINT, "--no-rugcheck")
     assert document["status"] == "success"
     statuses = {
         item["source"]: item["status"] for item in document["coverage"]
     }
-    assert statuses["jupiter"] == "skipped"
     assert statuses["rugcheck"] == "skipped"
-    assert statuses["dexscreener"] == "no_data"
+    assert statuses["jupiter"] == "no_data"
 
 
 def test_http_payloads_retained_without_repeat_fetches():
-    jupiter, dex, rugcheck = Mock(), Mock(), Mock()
+    jupiter, rugcheck = Mock(), Mock()
     payload = {"id": MINT, "usdPrice": 1, "extra": "raw-only"}
     jupiter.get_token.return_value = provider_result("success", payload)
-    dex.get_pairs.return_value = provider_result("no_data", [])
     rugcheck.get_report.return_value = provider_result("no_data")
     report = ScanReport("token", MINT, "RPC", STAMP)
-    TokenContext(jupiter, dex, rugcheck).enrich(report, MINT, True, True)
+    TokenContext(jupiter, rugcheck).enrich(report, MINT, True, True)
     document = output_for(report, "token", MINT)
     assert "raw-only" not in json.dumps(document)
     document = output_for(report, "token", MINT, raw=True)
     assert document["records"][0]["raw"]["jupiter"] == payload
     assert document["records"][0]["coverage"][1]["fetched_at"]
     jupiter.get_token.assert_called_once_with(MINT)
-    dex.get_pairs.assert_called_once_with(MINT)
     rugcheck.get_report.assert_called_once_with(MINT)
 
 
@@ -161,7 +155,7 @@ def test_discovery_raw_extras_and_order_are_preserved():
     )
     report.raw["featured"] = {"mint": "featured-only"}
     client = providers_for([MINT])
-    for provider in (client.jupiter, client.dexscreener):
+    for provider in (client.jupiter,):
         provider.get_tokens.return_value[MINT].fetched_at = STAMP
     enricher(client).enrich(report)
     document = output_for(report, "list", "--stonk", raw=True)
@@ -183,7 +177,7 @@ def test_discovery_raw_extras_and_order_are_preserved():
 def test_nested_rpc_uses_scan_contract_and_failure_coverage(failed):
     report = launch_report()
     client = providers_for([MINT])
-    for provider in (client.jupiter, client.dexscreener):
+    for provider in (client.jupiter,):
         provider.get_tokens.return_value[MINT].fetched_at = STAMP
     scan = Mock(return_value=ScanReport("token", MINT, "RPC", STAMP))
     if failed:
@@ -231,7 +225,7 @@ def test_strict_json_preserves_integer_strings_and_reports_nan():
         ["token"],
         ["list", "--stonk", "--category", "bad-secret"],
         ["list", "--page", "no-secret"],
-        ["list", "dexscreener", "--stonk"],
+        ["list", "jupiter", "--stonk"],
         ["list", "--unknown=secret"],
     ],
 )
@@ -382,15 +376,15 @@ def test_schema_rejects_numeric_raw_token_amounts():
 
 def test_malformed_optional_discovery_text_remains_schema_valid():
     report = SearchReport(
-        "boosted",
+        "recent",
         TokenSearches(
-            [{"tokenAddress": MINT, "chainId": [], "description": {"bad": 1}}],
+            [{"id": MINT, "symbol": [], "description": {"bad": 1}}],
             0.0,
-            "dexscreener",
+            "jupiter",
             "success",
         ),
     )
-    document = output_for(report, "list", "--boosted")
+    document = output_for(report, "list", "jupiter")
     assert document["status"] == "partial"
-    assert document["records"][0]["identity"]["chain"] is None
+    assert document["records"][0]["identity"]["symbol"] is None
     assert document["records"][0]["facts"]["description"] is None
