@@ -385,7 +385,11 @@ def test_removed_scan_command_fails_before_network(
         assert output.err == ""
     else:
         assert "invalid choice: 'scan'" in output.err
-        assert "'token'" in output.err
+        # Argparse versions differ in how they quote valid choices.
+        choices = output.err.partition("(choose from ")[2].partition(")")[0]
+        choices = {choice.strip(" '\"") for choice in choices.split(",")}
+        assert "token" in choices
+        assert "scan" not in choices
         assert output.out == ""
     http.assert_not_called()
     rpc.assert_not_called()
