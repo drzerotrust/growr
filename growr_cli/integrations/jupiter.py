@@ -152,6 +152,8 @@ def token_summary(token) -> dict[str, Any]:
     return {
         "name": token.get("name"),
         "symbol": token.get("symbol"),
+        "decimals": token.get("decimals"),
+        "icon": token.get("icon"),
         "price_usd": token.get("usdPrice"),
         "market_cap": token.get("mcap"),
         "liquidity": token.get("liquidity"),

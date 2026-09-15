@@ -3,6 +3,8 @@ name = "growr"
 version = "0.2.0"
 description = "Read-only Solana token, token-account, and wallet analysis CLI."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 dependencies = [
     "python-dotenv>=1.0,<2.0",

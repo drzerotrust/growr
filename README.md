@@ -332,9 +332,197 @@ for current billing. Jupiter and Stonkfun have separate usage policies.
 
 ## Investigation playbooks
 
-These recipes use current Growr commands. JSON extraction examples require
-`jq`. Recent transaction details currently require direct RPC; no Growr
-transaction-history command or flag is implemented yet.
+The executable playbooks call `growr.py --json` through `subprocess` and
+combine its public reports. Use the same Python environment as Growr;
+child commands load the root `.env`. Configure `JUPITER_API_KEY` there for
+the default metadata lookup, or use `--no-jupiter` to skip it.
+
+```bash
+# Find sampled owners and their balances, with Jupiter metadata.
+python3 scripts/playbooks/token_holders.py <MINT>
+
+# Inspect one wallet directly, with machine-readable output.
+python3 scripts/playbooks/wallet_holdings.py <WALLET> --json
+
+# Permit up to ten additional RPC scans if Jupiter cannot supply units.
+python3 scripts/playbooks/token_holders.py <MINT> \
+  --wallet-limit 5 --mint-limit 10 --json
+
+# Limit metadata enrichment to the first 100 distinct holding mints.
+python3 scripts/playbooks/wallet_holdings.py <WALLET> \
+  --jupiter-batch-limit 1 --json
+
+# Skip Jupiter and additional mint scans; keep unknown quantities raw.
+python3 scripts/playbooks/token_holders.py <MINT> --no-jupiter --json
+
+# Resolve units through RPC instead of Jupiter.
+python3 scripts/playbooks/wallet_holdings.py <WALLET> \
+  --no-jupiter --mint-limit 10
+
+# Save a report under the ignored data directory.
+mkdir -p data
+python3 scripts/playbooks/token_holders.py <MINT> \
+  --json > data/token-investigation.json
+
+python3 scripts/playbooks/token_holders.py --help
+python3 scripts/playbooks/wallet_holdings.py --help
+```
+
+`token_holders.py` groups the largest token accounts by their reported
+owner, ranks those owners by the summed balance **within that sample**,
+and scans up to five distinct owners by default. It preserves each sampled
+account and its rank. These are address observations, not a complete holder
+census or verified people; pools and program authorities can appear.
+
+Both scripts combine each wallet's nonzero accounts by mint and token
+program, retaining individual addresses, raw balances and frozen states.
+`raw_amount` is an exact integer string from RPC. Zero accounts are omitted
+and counted. `is_target` distinguishes the original token from other
+holdings; it is false for all standalone wallet results.
+
+After reading the wallets, the playbook deduplicates holding mints across
+all inventories and calls `growr.py --json search jupiter <MINTS>` in batches
+of up to 100 exact addresses. Metadata includes available names, symbols,
+icons, social links, verification status, token price and update time.
+A token held by several wallets is looked up once. Prices remain Jupiter
+observations; no USD portfolio value is calculated.
+
+Console token quantities use thousands separators and retain every decimal
+place. Individual account rows also show token quantities when decimals are
+known: `1200000000` raw units with six decimals becomes `1,200 tokens`.
+Unknown decimals leave a grouped raw balance, such as `1,234 raw units`.
+JSON keeps exact, ungrouped strings, including every account's raw balance.
+
+Known RPC decimals take precedence. Otherwise, valid Jupiter decimals and
+a matching token program convert raw balances into exact decimal strings.
+`amount_source` identifies `rpc` or `jupiter`; `metadata_conflicts` records
+conflicting Jupiter units without replacing known RPC units. Names remain
+available even if decimals are missing. Optional RPC fallback scans only
+mints whose units remain unresolved, caching success and failure.
+
+| Option | Default | Scope |
+| --- | --- | --- |
+| `--wallet-limit` | 5 | Token playbook only; 1–20 distinct sampled owners |
+| `--jupiter-batch-limit` | 10 | 1–10 batches, each with at most 100 distinct mints |
+| `--no-jupiter` | Off | Skip Jupiter metadata; no Jupiter key needed |
+| `--mint-limit` | 0 | 0–50 additional RPC mint scans for unresolved units |
+| `--timeout` | 30 | 1–120 seconds for each child process |
+| `--json` | Off | Emit one playbook document instead of console output |
+
+Limits apply across the entire run. Lookups follow wallet inventory order;
+raw balances of different tokens do not rank portfolio value. Holdings stay
+in the report when metadata is unavailable or a budget is exhausted.
+`amount_tokens` stays null with an explanatory `amount_status` when units
+cannot be resolved. `--mint-limit 0` disables RPC fallback; combine it with
+`--no-jupiter` for raw quantities except where the initial target scan
+already supplied units.
+
+Each wallet uses four RPC calls; each token scan uses three or four and
+disables its individual Jupiter/Rugcheck context. Each Jupiter batch uses
+one HTTP request and zero RPC calls. Default token investigation is capped
+at **24 RPC calls plus 10 Jupiter HTTP requests**, across at most 16 child
+commands. A standalone wallet is capped at **4 RPC calls plus 10 Jupiter
+HTTP requests**, across at most 11 children. Five distinct mints across five
+selected wallets normally need just one Jupiter batch: at most 24 RPC
+calls plus one HTTP request. Every permitted fallback token scan adds up
+to four RPC calls. Subprocess counts are measured; network counts are
+upper estimates. Calls are sequential, with no retries or recursive
+expansion into other holders.
+
+Playbook JSON uses `playbook_version: "1.1"`, separate from Growr schema 2.2.
+`sample` describes selected owners; `wallets[].holdings` contains balances,
+amount provenance and per-holding `metadata`. `metadata_lookups` contains
+one Jupiter outcome per mint; `mint_lookups` contains cached RPC unit
+outcomes. Metadata `scan_index` is a zero-based reference into `scans`,
+which retains child commands, run timestamps, coverage, exit codes and safe
+error codes. Skipped or over-budget lookups have no scan index. Reports
+exclude child stderr, raw payloads and RPC endpoints.
+
+Failed wallet inventories have `holdings: null`; successful empty ones
+have `holdings: []`. Missing Jupiter IDs are `no_data`, failed batches are
+`failed`, and lookups beyond the cap are `budget_exhausted`. These gaps,
+conflicting units and incomplete inventories mark investigations partial;
+explicitly skipped lookups do not. An absent Jupiter key leaves usable RPC
+balances in a partial report. Usable partial reports exit 0; initial scan
+failure exits 1 with an error report; invalid arguments exit 2 with usage
+on stderr. Scans happen at separate times, so sampled balances and later
+wallet balances can differ. Holdings do not establish purchases,
+transferability, shared control or bundle membership.
+
+### Reading playbook output
+
+For `python3 scripts/playbooks/token_holders.py <MINT> --wallet-limit 2`,
+the following illustrative excerpt uses fictional balances and replaces
+addresses with descriptive placeholders. The closing notes are omitted.
+
+```text
+growr playbook | token_holders | partial
+Target: <TARGET_MINT>
+Sample: 3 token accounts; 2 owners selected; 0 unresolved
+
+Wallet: <WALLET_A> [success]
+  Target tokens in sample: 1,000
+  Inventory complete: True
+  SOL balance: 1.5
+  target <TARGET_MINT>: 1,200 tokens
+    TGT Target Token
+    Jupiter metadata: success; amount source: rpc
+    <TARGET_ACCOUNT>: 1,200 tokens [initialized]
+  holding <OTHER_MINT>: 2.5 tokens
+    EX Example Token
+    Jupiter metadata: success; amount source: jupiter
+    Jupiter price USD: 1.25
+    <OTHER_ACCOUNT_1>: 1.5 tokens [initialized]
+    <OTHER_ACCOUNT_2>: 1 tokens [initialized]
+  holding <UNINDEXED_MINT>: 1,234 raw units (no_data)
+    Jupiter metadata: no_data; amount source: unknown
+    <UNINDEXED_ACCOUNT>: 1,234 raw units [initialized]
+
+Wallet: <WALLET_B> [failed]
+  Target tokens in sample: 500
+  Inventory complete: False
+  SOL balance: None
+  Holdings unavailable; inspect scans in the JSON report.
+
+Child commands: 4; estimated RPC calls: at most 12; Jupiter HTTP requests: at most 1
+```
+
+| Output | How to read it |
+| --- | --- |
+| `Target: <TARGET_MINT>` | The mint supplied to the token-holder script. It is the token being investigated. |
+| `3 token accounts; 2 owners selected; 0 unresolved` | The initial sample returned three accounts. Their owners were resolved, and two distinct owners were selected for wallet scans. This does not establish a complete holder census or guarantee that those later scans succeed. |
+| `Target tokens in sample: 1,000` | Wallet A's summed target-token balance in the initial largest-account sample. Only sampled accounts contribute to this number. |
+| `target <TARGET_MINT>: 1,200 tokens` | Wallet A's target-token balance across its returned accounts in the later wallet scan. This includes accounts outside the initial sample. Different coverage and scan times can explain a difference; it does not prove a purchase. |
+| `holding <OTHER_MINT>: 2.5 tokens` | A different token held by wallet A. Each `holding` line identifies that token by its mint; the symbol and name appear underneath when available. |
+| Indented account addresses and quantities | The individual token accounts contributing to the holding. Here, `1.5 + 1` tokens equals the `2.5` token total. Each account uses the holding's known decimals; amounts stay labeled `raw units` when those decimals are unavailable. `[initialized]` is the account state, not a safety rating. |
+| `amount source: rpc` / `jupiter` | Where the decimals used to convert the raw balance came from. Raw balances come from RPC in both cases. Jupiter can supply a name even when RPC supplies the decimals. |
+| `Jupiter price USD: 1.25` | Jupiter's reported price per token. The playbook does not calculate this wallet's USD holding value. |
+| `Inventory complete: True` with wallet `[success]` | Both token-program inventories were read without omitted malformed entries. Metadata availability is separate, so an unindexed holding can still appear beneath a successful wallet. |
+| Wallet B `[failed]`, `None`, and unavailable holdings | Its wallet scan failed. The earlier sampled balance of `500` remains usable, but its current SOL balance and inventory are unknown. Neither should be treated as zero. |
+| Header `partial` | Some requested observations are missing. Here, wallet B failed and one holding lacks metadata; wallet A's known balances remain usable. |
+
+For `<UNINDEXED_MINT>`, Jupiter returned no matching record (`no_data`).
+The script still found `1,234` raw units through RPC, but cannot convert
+them without decimals. This does **not** mean 1,234 tokens, an empty
+balance, or a failed transaction. A metadata status of `failed` instead
+means the lookup did not complete successfully; `budget_exhausted` means
+the configured lookup allowance was used up. Inspect `metadata_lookups`
+and the corresponding `scans` receipts in `--json` output for details.
+
+The four child commands are one token scan, two attempted wallet scans
+and one Jupiter search. The reported network counts are upper estimates;
+the failed wallet command may have stopped before making all its calls.
+
+For `wallet_holdings.py`, the top-level `Target` is the supplied **wallet
+address**. There is no target token or largest-account sample: every token
+line is labeled `holding`. The amount, metadata and failure explanations
+above apply to both scripts. `SOL balance` is the wallet's native SOL
+balance, reported separately from its token-account holdings.
+
+The manual recipes below expose the same individual commands. Their JSON
+extraction examples require `jq`; the Python playbooks do not. Recent
+transaction details currently require direct RPC; no Growr transaction-history
+command or flag is implemented yet.
 
 ### 1. Find the largest accounts and their owners
 
@@ -948,3 +1136,7 @@ after 120 seconds. It performs no automatic retries and verifies at most one
 listing result per provider. Output contains schema-checked coverage summaries,
 not provider payloads. Exit 1 means a check was partial, failed, unverified, or
 hit a budget; it must not be interpreted as a successful readiness check.
+
+## License
+
+growr is licensed under the [MIT License](LICENSE).

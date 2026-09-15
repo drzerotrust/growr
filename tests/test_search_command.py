@@ -17,6 +17,8 @@ TOKENS = [
         "name": "Jupiter",
         "symbol": "JUP",
         "usdPrice": 0,
+        "decimals": 0,
+        "icon": "https://project.example/icon.png",
         "website": "https://project.example",
         "twitter": "https://x.com/project",
         "analytics": {"on_chain": {"status": "success", "data": {}}},
@@ -103,6 +105,10 @@ def test_search_returns_candidates_without_selecting_or_scanning(
         assert record["facts"]["source"] == "jupiter"
         if record["identity"]["mint"] == MINT:
             assert record["metrics"]["jupiter"]["values"]["price_usd"] == 0
+            assert record["metrics"]["jupiter"]["values"]["decimals"] == 0
+            assert record["metrics"]["jupiter"]["values"]["icon"] == (
+                "https://project.example/icon.png"
+            )
             assert record["social"]["score"] == 80
     get.assert_called_once_with(
         "%s/search" % settings.JUPITER_API_URL,
