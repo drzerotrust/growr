@@ -10,6 +10,7 @@ from uuid import uuid4
 from growr_cli import __version__, settings
 from growr_cli.machine.records import coverage, report_records
 from growr_cli.machine.safety import safe_text
+from growr_cli.requests import RequestBudget
 
 
 class Run:
@@ -21,6 +22,7 @@ class Run:
         self.id = str(uuid4())
         self.started_at = datetime.now(timezone.utc).isoformat()
         self.started_clock = perf_counter()
+        self.budget = RequestBudget()
 
     def metadata(self) -> dict[str, Any]:
         """Finish timing with a monotonic duration and UTC timestamp."""
@@ -32,6 +34,7 @@ class Run:
             "elapsed_ms": max(
                 0, round((perf_counter() - self.started_clock) * 1000, 3)
             ),
+            "requests": self.budget.snapshot(),
         }
 
 
@@ -73,13 +76,31 @@ def request_metadata(args) -> dict[str, Any]:
     uses_rpc = args.scan_type not in {"list", "search"} or getattr(
         args, "on_chain", False
     )
+    if uses_rpc:
+        options["commitment"] = getattr(args, "commitment", "finalized")
+    options.update(_history_options(args))
     rpc = "CLI --rpc-url override" if args.rpc_url else settings.RPC_LABEL
     return {
         "command": args.scan_type,
-        "target": getattr(args, "mint", getattr(args, "address", None)),
+        "target": getattr(
+            args,
+            "signature",
+            getattr(args, "mint", getattr(args, "address", None)),
+        ),
         "options": options,
         "rpc": rpc if uses_rpc else None,
     }
+
+
+def _history_options(args) -> dict[str, Any]:
+    """Describe the exact requested address-history window."""
+
+    if args.scan_type == "history":
+        return {
+            key: getattr(args, key)
+            for key in ("limit", "before", "until", "details")
+        }
+    return {}
 
 
 def _all_coverage(records) -> list[dict[str, Any]]:
@@ -154,6 +175,7 @@ def build_response(run, args=None, report=None, error=None) -> dict[str, Any]:
                 )
             )
     outcomes.extend(_all_coverage(records))
+    _exact_balances(records, run.budget.snapshot()["observations"])
     status = "success" if records else "no_data"
     if any(
         item["status"] in {"failed", "not_configured", "partial"}
@@ -174,6 +196,24 @@ def build_response(run, args=None, report=None, error=None) -> dict[str, Any]:
     if report is not None and args.include_raw and hasattr(report, "raw"):
         result["raw"] = {"discovery": report.raw}
     return result
+
+
+def _exact_balances(records, observations) -> None:
+    """Attach exact lamports from measured RPC observations."""
+
+    balances = {
+        item["subject"]: item["lamports"]
+        for item in observations
+        if "lamports" in item and item["status"] == "success"
+    }
+    for item in records:
+        if item["kind"] == "wallet":
+            item["facts"]["sol_lamports"] = balances.get(
+                item["identity"]["address"]
+            )
+        if item["kind"] == "token_account":
+            owner = item["facts"].get("owner_wallet", {})
+            owner["sol_lamports"] = balances.get(owner.get("address"))
 
 
 def _clean(value, path="$") -> tuple[Any, list[dict[str, Any]]]:

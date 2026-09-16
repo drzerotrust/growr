@@ -4,6 +4,7 @@ from typing import Any
 
 from growr_cli.machine.schema_records import record_variants
 from growr_cli.machine.schema_rewards import reward_metrics
+from growr_cli.machine.schema_transactions import transaction_variants
 
 
 def obj(properties, required=None, *, additional=False) -> dict[str, Any]:
@@ -30,7 +31,16 @@ def response_schema() -> dict[str, Any]:
     }
     identity = obj(
         dict.fromkeys(
-            ("chain", "address", "mint", "pool", "owner", "name", "symbol"),
+            (
+                "chain",
+                "address",
+                "signature",
+                "mint",
+                "pool",
+                "owner",
+                "name",
+                "symbol",
+            ),
             nullable_text,
         ),
         [],
@@ -71,6 +81,8 @@ def response_schema() -> dict[str, Any]:
                     "token_account",
                     "pool",
                     "token_discovery",
+                    "history",
+                    "transaction",
                 ]
             },
             "identity": identity,
@@ -95,7 +107,7 @@ def response_schema() -> dict[str, Any]:
             "on_chain",
         ],
     )
-    record["oneOf"] = record_variants()
+    record["oneOf"] = record_variants() + transaction_variants()
     outcome = obj(
         {
             "source": text,
@@ -142,7 +154,9 @@ def response_schema() -> dict[str, Any]:
                     "started_at": timestamp,
                     "completed_at": timestamp,
                     "elapsed_ms": {"type": "number", "minimum": 0},
-                }
+                    "requests": values,
+                },
+                ["id", "started_at", "completed_at", "elapsed_ms"],
             ),
             "request": obj(
                 {
@@ -153,6 +167,8 @@ def response_schema() -> dict[str, Any]:
                             "token-account",
                             "list",
                             "search",
+                            "history",
+                            "transaction",
                             None,
                         ]
                     },

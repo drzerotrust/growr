@@ -17,6 +17,7 @@ from growr_cli.enrichment import LaunchEnricher
 from growr_cli.enrichment.on_chain import OnChainEnricher
 from growr_cli.enrichment.stonks_token import StonksTokenContext
 from growr_cli.enrichment.token_context import TokenContext
+from growr_cli.history_arguments import add_history_parsers
 from growr_cli.integrations.http import HttpClient, ProviderError
 from growr_cli.integrations.jupiter import (
     JUPITER_CATEGORIES,
@@ -42,12 +43,14 @@ from growr_cli.machine.response import Run, build_response, serialize
 from growr_cli.machine.schema import response_schema
 from growr_cli.models import ScanReport, SearchReport
 from growr_cli.output import renderer_for
+from growr_cli.requests import RequestBudget
 from growr_cli.safety import redact_endpoint, safe_text
 from growr_cli.scanners import (
     TokenAccountScanner,
     TokenScanner,
     WalletScanner,
 )
+from growr_cli.scanners.history import HistoryScanner
 from growr_cli.searchers import (
     STONKS_CATEGORIES,
     JupiterTokenSearcher,
@@ -160,6 +163,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print the versioned agent-facing JSON report.",
     )
     parser.add_argument(
+        "--commitment",
+        choices=("finalized", "confirmed"),
+        default="finalized",
+        help="RPC observation commitment (default: finalized).",
+    )
+    parser.add_argument(
+        "--max-rpc-calls",
+        type=positive_integer,
+        default=500,
+        help="Hard RPC attempt cap across this run (default: 500).",
+    )
+    parser.add_argument(
+        "--max-http-calls",
+        type=positive_integer,
+        default=100,
+        help="Hard provider HTTP attempt cap (default: 100).",
+    )
+    parser.add_argument(
         "--no-color", action="store_true", help="Disable ANSI terminal colors."
     )
 
@@ -188,6 +209,7 @@ def build_parser() -> argparse.ArgumentParser:
     # dest stores the chosen command in args.scan_type; required=True
     # rejects an invocation that supplies no command.
     subparsers = parser.add_subparsers(dest="scan_type", required=True)
+    add_history_parsers(subparsers)
 
     # schema needs no address or provider options. Its handler later
     # prints the JSON contract without opening network connections.
@@ -578,7 +600,12 @@ def _list_tokens(
 
     def scan_launch(mint) -> ScanReport:
         # Each worker owns and closes its RPC connections.
-        launch_rpc = SolanaRpcClient(rpc_url, settings.REQUEST_TIMEOUT_SECONDS)
+        launch_rpc = SolanaRpcClient(
+            rpc_url,
+            settings.REQUEST_TIMEOUT_SECONDS,
+            commitment=args.commitment,
+            budget=http.budget,
+        )
         try:
             # Listing verification only requests on-chain observations.
             return TokenScanner(launch_rpc, rpc_label, context).scan(
@@ -641,8 +668,19 @@ def _build_report(
 
     LOGGER.info("Using %s", rpc_label)
     with closing(
-        SolanaRpcClient(rpc_url, settings.REQUEST_TIMEOUT_SECONDS)
+        SolanaRpcClient(
+            rpc_url,
+            settings.REQUEST_TIMEOUT_SECONDS,
+            commitment=args.commitment,
+            budget=http.budget,
+        )
     ) as rpc:
+        if args.scan_type == "transaction":
+            return HistoryScanner(rpc, rpc_label).transaction(args.signature)
+        if args.scan_type == "history":
+            return HistoryScanner(rpc, rpc_label).history(
+                args.address, args.limit, args.before, args.until, args.details
+            )
         if args.scan_type == "token":
             context = _token_context(args, http)
             return TokenScanner(rpc, rpc_label, context).scan(
@@ -747,10 +785,19 @@ def main() -> int:
 def _execute_run(args, run, rpc_url, rpc_label, rpc_url_override) -> int:
     """Execute and render within the private redaction context."""
 
+    run.budget = RequestBudget(args.max_rpc_calls, args.max_http_calls)
     try:
         log_configuration(args, rpc_url, rpc_url_override)
-        with closing(HttpClient(settings.REQUEST_TIMEOUT_SECONDS)) as http:
+        with closing(
+            HttpClient(settings.REQUEST_TIMEOUT_SECONDS, run.budget)
+        ) as http:
             report = _build_report(args, rpc_url, rpc_label, http)
+        requests = run.budget.snapshot()
+        LOGGER.info(
+            "Requests attempted: %s RPC, %s provider HTTP",
+            requests["rpc"]["attempted"],
+            requests["http"]["attempted"],
+        )
         LOGGER.info("Rendering %s report", "JSON" if args.json else "console")
         if args.json:
             # Serialize fully before writing to stdout.

@@ -115,6 +115,7 @@ def test_search_returns_candidates_without_selecting_or_scanning(
         params={"query": query.strip()},
         headers={"x-api-key": "synthetic-key"},
         timeout=5,
+        allow_redirects=False,
     )
     close.assert_called_once()
 

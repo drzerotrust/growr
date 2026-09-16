@@ -82,7 +82,7 @@ def offline_io(monkeypatch):
 
     clients = []
 
-    def rpc_client(*arguments):
+    def rpc_client(*arguments, **options):
         client = Mock()
         client.parse_address.side_effect = Pubkey.from_string
         client.get_account_data.side_effect = account_data

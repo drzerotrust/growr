@@ -14,6 +14,7 @@ from growr_cli.analysis.risk import (
 from growr_cli.logger import get_logger
 from growr_cli.models import ScanReport
 from growr_cli.scanners.base import BaseScanner
+from growr_cli.scanners.observations import optional_result
 from growr_cli.solana.decoding import parse_mint
 from growr_cli.solana.holders import read_holders
 from growr_cli.solana.metadata import read_metadata
@@ -84,13 +85,16 @@ class TokenScanner(BaseScanner):
                 mint,
                 mint_summary["supply"],
                 mint_summary["decimals"],
+                mint_summary["program_id"],
             )
-            metadata = metadata_future.result()
-            holders = holders_future.result()
+            metadata = optional_result(metadata_future, report, "metadata")
+            holders = optional_result(holders_future, report, "holders")
 
-        report.summary["metadata"] = metadata
-        report.summary["holders"] = holders
-        report.findings.append(holder_finding(holders))
+        if metadata is not None:
+            report.summary["metadata"] = metadata
+        if holders is not None:
+            report.summary["holders"] = holders
+            report.findings.append(holder_finding(holders))
 
         if include_market_context:
             self.context.enrich(
@@ -112,5 +116,7 @@ class TokenScanner(BaseScanner):
     def _read_metadata(self, mint) -> dict[str, Any]:
         return read_metadata(self.rpc, mint)
 
-    def _read_holders(self, mint, supply_text, decimals) -> dict[str, Any]:
-        return read_holders(self.rpc, mint, supply_text, decimals)
+    def _read_holders(
+        self, mint, supply_text, decimals, program=None
+    ) -> dict[str, Any]:
+        return read_holders(self.rpc, mint, supply_text, decimals, program)

@@ -72,7 +72,7 @@ def test_jupiter_verification_deduplicates_and_closes_rpc(
     )
     clients = []
 
-    def rpc_client(*args):
+    def rpc_client(*args, **options):
         client = Mock()
         clients.append(client)
         return client

@@ -10,6 +10,7 @@ from growr_cli.models import (
     ScanReport,
 )
 from growr_cli.scanners.base import BaseScanner
+from growr_cli.scanners.observations import activity_fields, optional_result
 from growr_cli.solana.decoding import parse_token_account
 
 LOGGER = get_logger(__name__)
@@ -88,12 +89,16 @@ class TokenAccountScanner(BaseScanner):
         with ThreadPoolExecutor(max_workers=2) as pool:
             balance_future = pool.submit(self.rpc.get_balance_sol, owner)
             signatures_future = pool.submit(self.rpc.get_signatures, owner, 10)
-            sol_balance = balance_future.result()
-            signatures = signatures_future.result()
+            sol_balance = optional_result(
+                balance_future, report, "owner_balance"
+            )
+            signatures = optional_result(
+                signatures_future, report, "owner_signatures"
+            )
 
         report.summary["owner_wallet"] = {
             "address": account["owner"],
             "sol_balance": sol_balance,
-            "recent_signature_count": len(signatures),
+            **activity_fields(signatures, report, "owner_signatures"),
         }
         return report

@@ -165,6 +165,7 @@ def test_search_sends_q_and_retains_the_returned_page(
         },
         headers=None,
         timeout=5,
+        allow_redirects=False,
     )
     close.assert_called_once()
     assert output.err == ""

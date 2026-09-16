@@ -9,6 +9,9 @@ from pathlib import Path
 from typing import Any
 
 from solders.pubkey import Pubkey
+from solders.signature import Signature
+
+from scripts.playbooks.evidence import measured_requests, validate_activity
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -67,9 +70,10 @@ def scan_record(document, kind, address) -> dict[str, Any]:
     if not isinstance(records, list) or len(records) != 1:
         raise ValueError("Expected one scan record")
     record = records[0]
+    identity_key = "signature" if kind == "transaction" else "address"
     if (
         record["kind"] != kind
-        or record["identity"]["address"] != address
+        or record["identity"][identity_key] != address
         or record["identity"]["chain"] != "solana"
         or not isinstance(record["facts"], dict)
         or record["facts"].get("source") != "rpc"
@@ -147,6 +151,23 @@ class GrowrRunner:
     timeout: int
     max_calls: int
     scans: list[dict[str, Any]] = field(default_factory=list, init=False)
+
+    def history(self, address, limit=10, before=None) -> dict[str, Any] | None:
+        """Read references; activity playbooks deduplicate bodies."""
+
+        if not valid_address(address) or not 1 <= limit <= 100:
+            raise ValueError("Invalid history request")
+        command = ["history", address, "--limit", str(limit)]
+        if before:
+            Signature.from_string(before)
+            command.extend(["--before", before])
+        return self._execute(command)
+
+    def transaction(self, signature) -> dict[str, Any] | None:
+        """Read one transaction through the public CLI contract."""
+
+        Signature.from_string(signature)
+        return self._execute(["transaction", signature])
 
     def scan(self, kind, address) -> dict[str, Any] | None:
         """Capture JSON without forwarding child diagnostics."""
@@ -227,6 +248,9 @@ class GrowrRunner:
                 else document["coverage"]
             )
             run = document["run"]
+            if command[0] in {"history", "transaction"}:
+                validate_activity(evidence, command, document["request"])
+            requests = measured_requests(run)
             timing = {
                 key: run[key] for key in ("id", "started_at", "completed_at")
             }
@@ -240,4 +264,5 @@ class GrowrRunner:
             run=timing,
             coverage=coverage,
         )
+        receipt["requests"] = requests
         return evidence

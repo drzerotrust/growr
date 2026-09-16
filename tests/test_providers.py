@@ -115,6 +115,7 @@ def test_provider_urls_come_from_settings(monkeypatch) -> None:
         params=None,
         headers=None,
         timeout=5,
+        allow_redirects=False,
     )
 
 

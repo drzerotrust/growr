@@ -12,6 +12,7 @@ import requests
 
 from growr_cli import __version__
 from growr_cli.models import EnrichmentResult
+from growr_cli.requests import RequestBudget, RequestLimitError
 
 
 class ProviderError(ValueError):
@@ -50,10 +51,11 @@ def retry_delay(value) -> int | None:
 class HttpClient:
     """Own a reusable HTTP session for injected integrations."""
 
-    def __init__(self, timeout_seconds) -> None:
+    def __init__(self, timeout_seconds, budget=None) -> None:
         """Configure the session and a timeout for every request."""
 
         self.timeout_seconds = timeout_seconds
+        self.budget = budget if budget is not None else RequestBudget()
         self.session = requests.Session()
         self.session.headers.update(
             {
@@ -79,11 +81,41 @@ class HttpClient:
         """Fetch JSON with credential-free transport failures."""
 
         try:
+            receipt = self.budget.start("http", source)
+        except RequestLimitError:
+            return None, "Provider HTTP request budget exhausted"
+        try:
+            data, error = self._get_json(
+                url,
+                params,
+                headers,
+                source=source,
+                include_error_body=include_error_body,
+            )
+        except Exception:
+            self.budget.finish(receipt, "failed")
+            raise
+        self.budget.finish(receipt, "failed" if error else "success")
+        return data, error
+
+    def _get_json(
+        self,
+        url,
+        params,
+        headers,
+        *,
+        source,
+        include_error_body,
+    ) -> tuple[Any, str | None]:
+        """Perform one attempt without following redirects."""
+
+        try:
             response = self.session.get(
                 url,
                 params=params,
                 headers=headers,
                 timeout=self.timeout_seconds,
+                allow_redirects=False,
             )
         except requests.RequestException as error:
             # Exception text can expose authenticated URLs or headers.
@@ -91,7 +123,7 @@ class HttpClient:
                 "%s request failed (%s)" % (source, type(error).__name__)
             )
 
-        if not response.ok:
+        if not response.ok or response.status_code in range(300, 400):
             status = "HTTP %s" % response.status_code
             detail = (
                 status

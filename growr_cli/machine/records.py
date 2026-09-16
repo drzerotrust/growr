@@ -74,6 +74,8 @@ def scan_record(data, provider_data=None, include_raw=False) -> dict[str, Any]:
     _scan_details(summary, outcomes)
     kind = data["scan_type"]
     identity = {"chain": "solana", "address": data["address"]}
+    if kind == "transaction":
+        identity = {"chain": "solana", "signature": data["address"]}
     if kind == "token":
         identity["mint"] = data["address"]
     elif kind == "token_account":
@@ -282,7 +284,7 @@ def report_records(
     if isinstance(report, ScanReport):
         return (
             [scan_record(report.to_dict(), report.provider_data, include_raw)],
-            None,
+            report.summary.get("pagination"),
             [],
         )
     findings = report.findings

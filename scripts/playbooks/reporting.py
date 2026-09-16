@@ -7,6 +7,7 @@ from decimal import Decimal
 from functools import partial
 from typing import Any
 
+from scripts.playbooks.evidence import measured_totals
 from scripts.playbooks.holdings import token_amount
 from scripts.playbooks.runner import valid_address
 
@@ -181,8 +182,9 @@ def request_budget(runner, resolver) -> dict[str, Any]:
         "jupiter_batches_attempted": searches,
         "rpc_calls_upper_estimate": 4 * (len(runner.scans) - searches),
         "provider_http_requests_upper_estimate": searches,
-        "note": "Network calls are estimated, not measured. Failed child "
-        "commands may stop before any or all calls complete.",
+        "measured": measured_totals(runner.scans),
+        "note": "Upper estimates bound requests. Measured totals cover "
+        "only children that returned validated counters.",
     }
 
 

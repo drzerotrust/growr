@@ -9,7 +9,7 @@ It scans:
 
 - token mints: authorities, standard Metaplex metadata, largest token accounts, Jupiter market/activity enrichment and social evidence, plus optional Rugcheck
 - SPL Token / Token-2022 token accounts: mint, owner, balance, state, delegate, close authority, and basic owner-wallet context
-- wallets: SOL balance, recent signature count, and SPL Token / Token-2022 account addresses, mints, raw balances, states and counts
+- wallets: SOL balance and exact lamports, recent signature records, and SPL Token / Token-2022 account addresses, mints, raw balances, states and counts
 
 Use `list` to browse feeds, `search <jupiter|stonks> <QUERY>` to find candidates,
 and `token <MINT>` to analyze a selected mint. Search returns the selected
@@ -283,12 +283,15 @@ python3 growr.py --no-color token <MINT>
 
 ## RPC request budgets
 
-Audited on 2026-09-14 for one successful invocation. RPC calls and market
+Updated on 2026-09-16 for one successful invocation. RPC calls and market
 provider HTTP requests are counted separately:
 
 | Command | Solana RPC calls | Other HTTP requests |
 | --- | --- | --- |
 | `wallet <WALLET>` | 4 | 0 |
+| `transaction <SIGNATURE>` | 1 | 0 |
+| `history <ADDRESS>` | 1 | 0 |
+| `history <ADDRESS> --details --limit N` | Up to 1 + N | 0 |
 | `token-account <ACCOUNT>` | 3 | 0 |
 | `token <MINT>` | 3–4 | Up to 1 Jupiter + 1 Rugcheck |
 | `token <MINT> --no-jupiter --no-rugcheck` | 3–4 | 0 |
@@ -317,18 +320,36 @@ when its key is configured. A conforming nonempty CLI page normally adds one
 Jupiter request; empty lists or missing keys add none. Search does not enrich.
 `--stonk` token context requests market, holders, burns and rewards once each.
 
-`--json`, `--include-raw`, logging and valid `--compare-to` add no network
-requests. Errors may stop execution early. Counts assume normal responses,
-exclude HTTP redirects, and do not include provider-internal work. There is
-no application retry loop or automatic pagination. JSON `coverage.counts`
-describes outcomes, not request counts; per-run request metering is not yet
-implemented.
+`--json`, `--include-raw`, logging and valid `--compare-to` add no
+requests. There is no automatic retry. Provider HTTP redirects are rejected
+so they cannot silently exceed the cap. Request counts are not provider
+billing credits; no credit cost is inferred.
 
-RPC counts are not always provider credit counts. Helius currently lists
-standard RPC at one credit per call; its full `getTransactionsForAddress`
-responses start at ten credits per 100 returned transactions, rounded up.
-Check the [Helius credit schedule](https://www.helius.dev/docs/billing/credits)
-for current billing. Jupiter and Stonkfun have separate usage policies.
+Each run shares a thread-safe budget, including listing verification workers.
+Global `--max-rpc-calls` defaults to 500 and `--max-http-calls` to 100.
+Exhaustion stops new requests and appears as failed/partial coverage;
+existing usable observations remain available. Global `--commitment` accepts
+`finalized` (default) or `confirmed`. Put these flags before the command:
+
+```bash
+python3 growr.py --json --max-rpc-calls 11 history <ADDRESS> --details --limit 10
+python3 growr.py --json --commitment confirmed wallet <WALLET>
+```
+
+`run.requests.rpc` and `run.requests.http` contain `attempted`, `failed`,
+`blocked`, and `limit`. A failed attempt consumes budget; a blocked reservation
+never reaches transport. `run.requests.observations` retains method, subject
+where applicable, commitment, retrieval time and response context slot.
+Signatures carry transaction slots; methods without a response context have
+a null receipt slot. `getMultipleAccounts` is one RPC method request.
+Provider payload parsing failures can still appear in coverage after a
+successful transport attempt. `coverage.counts` remains an outcome count.
+
+The selected endpoint has a safe label in `request.rpc`; Growr does not
+independently verify its cluster with an extra genesis-hash request.
+Observations from different calls are not one atomic snapshot. Wallet
+`facts.sol_lamports` preserves the exact integer string alongside the
+existing approximate `sol_balance` display number.
 
 ## Investigation playbooks
 
@@ -425,8 +446,9 @@ commands. A standalone wallet is capped at **4 RPC calls plus 10 Jupiter
 HTTP requests**, across at most 11 children. Five distinct mints across five
 selected wallets normally need just one Jupiter batch: at most 24 RPC
 calls plus one HTTP request. Every permitted fallback token scan adds up
-to four RPC calls. Subprocess counts are measured; network counts are
-upper estimates. Calls are sequential, with no retries or recursive
+to four RPC calls. Subprocess counts are measured; the caps above are
+upper estimates. `budget.measured` also sums validated child request counts
+and reports children with unknown measurements. Calls are sequential, with no retries or recursive
 expansion into other holders.
 
 Playbook JSON uses `playbook_version: "1.1"`, separate from Growr schema 2.2.
@@ -520,9 +542,9 @@ above apply to both scripts. `SOL balance` is the wallet's native SOL
 balance, reported separately from its token-account holdings.
 
 The manual recipes below expose the same individual commands. Their JSON
-extraction examples require `jq`; the Python playbooks do not. Recent
-transaction details currently require direct RPC; no Growr transaction-history
-command or flag is implemented yet.
+extraction examples require `jq`; the Python playbooks do not. Use `history`
+and `transaction` for RPC evidence, or the bounded `activity.py` playbook
+to combine explicit address histories with deduplicated transaction reads.
 
 ### 1. Find the largest accounts and their owners
 
@@ -569,99 +591,115 @@ Use a returned account address, not the wallet or mint. The scan exposes
 state, delegate, close authority and basic owner context. Its recent-signature
 count belongs to the owner wallet, not to the token-account address.
 
-### 4. Retrieve recent transactions through RPC
-
-The current wallet scan already requests ten recent signatures but only
-reports their count. Transaction bodies and action classification are not
-included. For either a wallet or a token-account address, call
-[getSignaturesForAddress](https://solana.com/docs/rpc/http/getsignaturesforaddress)
-and then [getTransaction](https://solana.com/docs/rpc/http/gettransaction) for
-selected signatures. One signature page plus ten bodies costs eleven RPC
-calls as a standalone lookup. An eventual wallet extension could reuse its
-existing signatures, adding ten calls for a total of fourteen.
-
-Wallet-address history can miss incoming token transfers that reference only
-the receiving token account. Use the token-account address for its own
-history. For broader wallet coverage, Helius
-[getTransactionsForAddress](https://www.helius.dev/docs/rpc/gettransactionsforaddress)
-supports full results plus owned-token-account filters in one page. That
-integration is not currently used by Growr. A bounded page still does not
-establish complete lifetime history.
-
-This bounded example uses the project's configured RPC from `.env`. It
-writes manual RPC results, not a Growr schema envelope, and makes at most
-eleven calls. Change `address` to inspect a selected token account.
+### 4. Read recent activity and individual transactions
 
 ```bash
-python3 - <<'PY' > recent-transactions.json
-import json
+# One page of signatures, with execution status and slot; one RPC call.
+python3 growr.py --json history <WALLET> --limit 10 > history.json
 
-import requests
+# Query the token account itself for its address references.
+python3 growr.py --json history <TOKEN_ACCOUNT> --limit 10 --details
 
-from growr_cli import settings
+# Continue with pagination.next_before from a full page.
+python3 growr.py --json history <ADDRESS> --before <SIGNATURE> --limit 10
 
-address = "Beqv6dzTcjV2eodo8RRXCiCcnSYrS1vkQKhfqwHXqeit"
-limit = 10
-
-
-def rpc(session, method, params):
-    """Fetch one RPC result with a finite timeout and safe errors."""
-
-    try:
-        response = session.post(
-            settings.RPC_URL,
-            json={
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": method,
-                "params": params,
-            },
-            timeout=settings.REQUEST_TIMEOUT_SECONDS,
-        )
-        response.raise_for_status()
-        body = response.json()
-    except (requests.RequestException, ValueError):
-        raise SystemExit(
-            "RPC request failed; no complete report written"
-        ) from None
-    if not isinstance(body, dict) or "result" not in body or body.get("error"):
-        raise SystemExit(
-            "RPC rejected the request; no complete report written"
-        )
-    return body["result"]
-
-
-with requests.Session() as session:
-    signatures = rpc(
-        session,
-        "getSignaturesForAddress",
-        [address, {"limit": limit, "commitment": "confirmed"}],
-    )
-    transactions = []
-    for item in signatures[:limit]:
-        signature = item["signature"]
-        detail = rpc(
-            session,
-            "getTransaction",
-            [
-                signature,
-                {
-                    "encoding": "jsonParsed",
-                    "commitment": "confirmed",
-                    "maxSupportedTransactionVersion": 0,
-                },
-            ],
-        )
-        transactions.append({"signature": signature, "detail": detail})
-print(json.dumps({"address": address, "transactions": transactions}, indent=2))
-PY
+# Inspect one transaction, without a preliminary address search.
+python3 growr.py --json transaction <SIGNATURE>
 ```
 
-The example supports legacy/v0 transactions and stops on request errors.
-A null transaction body remains unavailable. It has no automatic paging,
-retries or partial-report handling. Inspect transaction status, instructions
-and balance changes before interpreting an address reference as a buy,
-sell or reward; `jsonParsed` does not classify every protocol.
+`history` accepts `--limit` from 1–100 (default 20), exclusive `--before`
+and `--until` signature bounds, and `--details`. It fetches one page only.
+Details add one call per distinct signature. JSON uses a `history` record
+with `facts.entries`; each entry retains its signature, slot, block time,
+confirmation status, execution error and `detail_status`. Top-level
+`pagination` repeats the window and continuation. A short page exhausts
+this provider page, not necessarily lifetime history.
+
+A `transaction` record uses `identity.signature` and `facts.transaction`.
+It contains legacy/v0 transaction evidence: fee payer, signers, fees in
+lamports, exact before/after native and token balances, instructions, logs,
+and recognized System/token events with signature, slot and outer/inner
+instruction positions. Missing token-balance sides and owners stay null.
+Amounts use integer strings. Token-account transfer endpoints are account
+addresses; they are not silently labelled wallet authorities.
+
+Failed transactions retain fees and balance observations but emit no
+completed events. Inner actions with missing execution logs or a caught
+program failure remain instructions rather than asserted movements.
+Unknown programs are retained without guessing swaps. `recording` and
+coverage expose missing metadata. Missing bodies and unsupported transaction
+versions remain gaps, with usable partial reports exiting 0.
+
+Wallet scans now retain the ten signature records they already fetched,
+without extra calls. A `token-account` scan still puts the owner's activity
+under `owner_wallet`; use `history <TOKEN_ACCOUNT>` for the account itself.
+Address references can miss incoming transfers mentioning only another token
+account, including closed accounts. Helius indexed-owner history, funding
+traversal, bundle attribution and protocol-specific swap decoders remain
+future work.
+
+### 5. Run the activity playbook
+
+```bash
+python3 scripts/playbooks/activity.py <WALLET> --json > activity.json
+python3 scripts/playbooks/activity.py <WALLET> \
+  --token-account <TOKEN_ACCOUNT> --limit 10 --pages 2 \
+  --transactions 20 --max-rpc-calls 30 --json
+```
+
+This script calls Growr through bounded subprocesses. It first reads
+references for the supplied addresses, then fetches each distinct transaction
+body once across the investigation. It never automatically discovers more
+accounts or traverses counterparties.
+
+Defaults: 10 signatures per page, one page per address, up to 20 unique
+bodies, 50 total RPC calls, and 30 seconds per child. `--token-account` may
+be repeated up to ten times. Limits are `--limit` 1–100, `--pages` 1–10,
+`--transactions` 1–100, `--max-rpc-calls` 1–500, and `--timeout` 1–120.
+One default address costs at most 11 RPC attempts, zero provider HTTP calls.
+
+Playbook JSON 1.1 contains `windows` (addresses, pages, continuation and stop
+reason), `transactions` (evidence plus referencing addresses/child indices),
+`scans` (safe receipts), and `budget`. A stopped body budget retains the
+signature with `budget_exhausted`; a failed read does not erase other
+transactions. An initial total history failure exits 1, usable partial
+results exit 0, and invalid arguments exit 2.
+
+### 6. Find shared holdings in a saved cohort
+
+```bash
+python3 scripts/playbooks/token_holders.py <MINT> --json > holders.json
+python3 scripts/playbooks/shared_holdings.py holders.json --json > overlap.json
+```
+
+`shared_holdings.py` reads a token-holder playbook 1.1 report of at most
+10 MiB and makes **zero network calls**. It lists mint/program groups held
+by at least two selected owners, with exact quantities and contributing
+account addresses. `selected_owner_count` is the cohort denominator;
+`known_absent` requires a complete inventory, while `unknown_presence` keeps
+missing inventories explicit. Unit conflicts are flagged.
+
+The target token and common-asset labels for wrapped SOL/USDC are identified
+separately. The ordering helps inspect overlap; an unlabelled token is not
+proven rare, and shared holdings do not establish common control. This
+report inherits the source scan times and present-balance limitations.
+
+Both new scripts support `--help` and `--json`, use the existing environment,
+and run from any working directory when invoked by their full path.
+
+### Application integration
+
+An application can run these commands with an argument list, `shell=False`,
+a fixed Python interpreter, and a finite subprocess timeout. Read one JSON
+object from stdout and inspect `status`, `coverage` and request limits before
+presenting conclusions. CLI envelopes remain schema 2.2 with additive history,
+transaction and request-metering fields; playbooks use their separate 1.1
+contract. `python3 growr.py schema` prints the current CLI schema.
+
+Keep authentication and RPC logic in Growr. The UI can select a mint, run
+`token_holders`, display owners and quantities, open an owner's `activity`,
+and compare a saved cohort with `shared_holdings`. The CLI does not start
+an HTTP server or manage application sessions.
 
 ## Single Stonkfun token
 
@@ -1084,7 +1122,7 @@ The standard metadata PDA behavior and read-only RPC approach follow the [Solana
 - Token-2022 mint extensions are flagged by program type but not decoded in this first CLI version.
 - Largest token accounts can include LP pools, lockers, and burn accounts; holder concentration is therefore a triage signal, not a definitive ownership graph.
 - Jupiter and Rugcheck are optional context. Their failure does not make a valid on-chain scan fail.
-- The tool does no recursive wallet clustering and no transaction decoding. That way lies a longer project.
+- Transaction interpretation covers standard System/token actions in legacy/v0 transactions. Protocol-specific swaps, recursive funding graphs and bundle confirmation are not implemented.
 
 ## Development
 

@@ -177,7 +177,12 @@ def test_largest_accounts_decode_sdk_nested_amount_and_resolve_owners() -> (
     rpc = Mock()
     rpc.get_largest_token_accounts.return_value = response.value
     rpc.get_multiple_accounts.return_value = [
-        Mock(data=make_token_account_bytes())
+        Mock(
+            data=bytes(Pubkey.from_string(MINT))
+            + make_token_account_bytes()[32:],
+            owner=SPL_TOKEN_PROGRAM_ID,
+            executable=False,
+        )
     ]
     rpc.extract_bytes.side_effect = lambda data: data
     scanner = TokenScanner(rpc, "test RPC", Mock())
@@ -190,5 +195,6 @@ def test_largest_accounts_decode_sdk_nested_amount_and_resolve_owners() -> (
         "owner": str(Pubkey.from_bytes(bytes(range(32, 64)))),
         "raw_amount": "900",
         "ui_amount": 0.0009,
+        "amount_tokens": "0.0009",
         "percent_of_supply": 90,
     }

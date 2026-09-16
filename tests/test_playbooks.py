@@ -112,6 +112,9 @@ def child_commands(monkeypatch, documents):
             assert target == "jupiter"
             assert len(command) == 7
             target = command[6]
+        elif kind == "history":
+            assert command[6:8] == ["--limit", "10"]
+            assert len(command) == 8
         else:
             assert command[6:] == (
                 ["--no-jupiter", "--no-rugcheck"] if kind == "token" else []

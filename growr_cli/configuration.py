@@ -124,7 +124,7 @@ def log_configuration(args, rpc_url, rpc_override) -> None:
     else:
         LOGGER.info("RPC: unused for this listing (enable with --on-chain)")
 
-    if args.scan_type in {"wallet", "token-account"}:
+    if args.scan_type in {"wallet", "token-account", "history", "transaction"}:
         return
     if args.scan_type == "token" and args.stonk:
         _endpoint("STONKS_API_URL")

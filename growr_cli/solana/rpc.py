@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 from http import HTTPStatus
 from typing import Any
 
@@ -10,6 +11,9 @@ import httpx
 from solana.rpc.api import Client
 from solana.rpc.types import TokenAccountOpts
 from solders.pubkey import Pubkey
+from solders.signature import Signature
+
+from growr_cli.requests import RequestBudget, RequestLimitError
 
 SPL_TOKEN_PROGRAM_ID = Pubkey.from_string(
     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
@@ -94,6 +98,9 @@ class SolanaRpcClient:
         self,
         rpc_url,
         timeout_seconds=DEFAULT_RPC_TIMEOUT_SECONDS,
+        *,
+        commitment="finalized",
+        budget=None,
     ) -> None:
         """Create a read-only RPC client.
 
@@ -106,9 +113,14 @@ class SolanaRpcClient:
         """
 
         self.rpc_url = rpc_url
+        self.commitment = commitment
+        self.budget = budget if budget is not None else RequestBudget()
         self.extra_headers = dict(DEFAULT_RPC_HEADERS)
         self.client = Client(
-            rpc_url, timeout=timeout_seconds, extra_headers=self.extra_headers
+            rpc_url,
+            timeout=timeout_seconds,
+            extra_headers=self.extra_headers,
+            commitment=commitment,
         )
 
     def close(self) -> None:
@@ -116,13 +128,24 @@ class SolanaRpcClient:
 
         self.client._provider.session.close()
 
-    def _rpc(self, method, operation) -> Any:
+    def _rpc(self, method, operation, subject=None) -> Any:
         try:
-            return operation()
-        except RpcError:
-            raise
+            receipt = self.budget.start(
+                "rpc", method, subject, self.commitment
+            )
+        except RequestLimitError as error:
+            raise RpcError(str(error)) from error
+        try:
+            response = operation()
         except Exception as error:
+            self.budget.finish(receipt, "failed")
             raise RpcError(format_rpc_error(error, method)) from error
+        slot = getattr(getattr(response, "context", None), "slot", None)
+        if method == "getTransaction":
+            slot = getattr(response.value, "slot", None)
+        lamports = response.value if method == "getBalance" else None
+        self.budget.finish(receipt, "success", slot, lamports)
+        return response
 
     def parse_address(self, address) -> Pubkey:
         """Validate a public key before it reaches an RPC endpoint.
@@ -153,6 +176,7 @@ class SolanaRpcClient:
         response = self._rpc(
             "getAccountInfo",
             lambda: self.client.get_account_info(address, encoding="base64"),
+            str(address),
         )
         value = response.value
         if value is None:
@@ -172,11 +196,15 @@ class SolanaRpcClient:
         """
 
         response = self._rpc(
-            "getBalance", lambda: self.client.get_balance(address)
+            "getBalance",
+            lambda: self.client.get_balance(address),
+            str(address),
         )
         return response.value / LAMPORTS_PER_SOL
 
-    def get_signatures(self, address, limit) -> list[Any]:
+    def get_signatures(
+        self, address, limit, before=None, until=None
+    ) -> list[Any]:
         """Read recent transaction signatures.
 
         Args:
@@ -190,10 +218,32 @@ class SolanaRpcClient:
         response = self._rpc(
             "getSignaturesForAddress",
             lambda: self.client.get_signatures_for_address(
-                address, limit=limit
+                address,
+                limit=limit,
+                before=Signature.from_string(before) if before else None,
+                until=Signature.from_string(until) if until else None,
             ),
+            str(address),
         )
         return list(response.value)
+
+    def get_transaction(self, signature) -> dict[str, Any] | None:
+        """Read a parsed legacy/v0 transaction; preserve missing bodies.
+
+        Translate the SDK's supported response using its JSON contract.
+        Higher versions fail visibly instead of being misinterpreted.
+        """
+
+        response = self._rpc(
+            "getTransaction",
+            lambda: self.client.get_transaction(
+                Signature.from_string(signature),
+                encoding="jsonParsed",
+                max_supported_transaction_version=0,
+            ),
+            signature,
+        )
+        return json.loads(response.to_json())["result"]
 
     def get_largest_token_accounts(self, mint) -> list[Any]:
         """Return the largest token accounts for a mint.
@@ -208,6 +258,7 @@ class SolanaRpcClient:
         response = self._rpc(
             "getTokenLargestAccounts",
             lambda: self.client.get_token_largest_accounts(mint),
+            str(mint),
         )
         return list(response.value)
 
@@ -223,11 +274,16 @@ class SolanaRpcClient:
 
         if not addresses:
             return []
+        if len(addresses) > 100:
+            raise ValueError(
+                "getMultipleAccounts accepts at most 100 addresses"
+            )
         response = self._rpc(
             "getMultipleAccounts",
             lambda: self.client.get_multiple_accounts(
                 addresses, encoding="base64"
             ),
+            [str(address) for address in addresses],
         )
         return list(response.value)
 
@@ -246,6 +302,7 @@ class SolanaRpcClient:
         response = self._rpc(
             "getTokenAccountsByOwner",
             lambda: self.client.get_token_accounts_by_owner(wallet, options),
+            {"address": str(wallet), "program_id": str(program_id)},
         )
         return list(response.value)
 

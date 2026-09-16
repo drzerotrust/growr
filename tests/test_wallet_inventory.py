@@ -17,7 +17,7 @@ from growr_cli.solana.rpc import (
     TOKEN_2022_PROGRAM_ID,
     RpcError,
 )
-from tests.conftest import make_rpc_token_account
+from tests.conftest import make_rpc_token_account, make_signature_record
 from tests.test_machine import output_for, validate
 
 WALLET = Pubkey.from_string("Beqv6dzTcjV2eodo8RRXCiCcnSYrS1vkQKhfqwHXqeit")
@@ -43,7 +43,7 @@ def inventory_rpc(spl, token_2022):
     rpc = Mock()
     rpc.parse_address.side_effect = Pubkey.from_string
     rpc.get_balance_sol.return_value = 1.0
-    rpc.get_signatures.return_value = ["signature"]
+    rpc.get_signatures.return_value = [make_signature_record()]
 
     def accounts(wallet, program):
         assert wallet == WALLET

@@ -8,7 +8,7 @@ __pycache__/
 *.egg-info/
 dist/
 build/
-
+webapp/
 # Local interactive client and assets.
 /client.py
 /data/

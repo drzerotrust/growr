@@ -68,3 +68,22 @@ def make_rpc_token_account(
         # Token-2022 account tag followed by an ImmutableOwner TLV.
         data += b"\x02\x07\x00\x00\x00"
     return RpcKeyedAccount(address, Account(1, bytes(data), program))
+
+
+def make_signature_record(index=1):
+    """Build an SDK signature response without making a request."""
+
+    from solders.rpc.responses import (
+        RpcConfirmedTransactionStatusWithSignature,
+    )
+    from solders.signature import Signature
+    from solders.transaction_status import TransactionConfirmationStatus
+
+    return RpcConfirmedTransactionStatusWithSignature(
+        Signature.from_bytes(bytes([index]) * 64),
+        42,
+        None,
+        None,
+        1700000000,
+        TransactionConfirmationStatus.Finalized,
+    )

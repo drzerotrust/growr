@@ -2,6 +2,10 @@
 
 from growr_cli.models import ScanReport
 from growr_cli.renderers.base import BaseConsoleRenderer
+from growr_cli.renderers.history import (
+    HistoryConsoleRenderer,
+    TransactionConsoleRenderer,
+)
 from growr_cli.renderers.jupiter import JupiterConsoleRenderer
 from growr_cli.renderers.scans import (
     TokenAccountConsoleRenderer,
@@ -14,6 +18,8 @@ _SCAN_RENDERERS = {
     "token": TokenConsoleRenderer,
     "wallet": WalletConsoleRenderer,
     "token_account": TokenAccountConsoleRenderer,
+    "history": HistoryConsoleRenderer,
+    "transaction": TransactionConsoleRenderer,
 }
 _LIST_RENDERERS = {
     "stonk": StonkfunConsoleRenderer,

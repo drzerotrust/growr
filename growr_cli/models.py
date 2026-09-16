@@ -55,8 +55,8 @@ class ScanReport:
     """A JSON-friendly report returned by every scan mode.
 
     Attributes:
-        scan_type: One of token, token_account, or wallet.
-        address: Address that was scanned.
+        scan_type: Token, token_account, wallet, history or transaction.
+        address: Requested address or transaction signature.
         rpc: Human-readable RPC label, never a secret-bearing URL.
         timestamp: UTC timestamp when the report was created.
         summary: Compact facts for the terminal and JSON output.

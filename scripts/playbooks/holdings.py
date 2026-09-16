@@ -255,6 +255,7 @@ def wallet_inventory(address, record, target=None) -> dict[str, Any]:
         "status": "failed",
         "inventory_complete": False,
         "sol_balance": None,
+        "sol_lamports": None,
         "holdings": None,
         "zero_accounts_omitted": None,
         "unparsed_account_count": None,
@@ -263,6 +264,8 @@ def wallet_inventory(address, record, target=None) -> dict[str, Any]:
         return result
     try:
         inventory = record["facts"]["token_accounts"]
+        lamports = record["facts"].get("sol_lamports")
+        lamports = str(raw_units(lamports)) if lamports is not None else None
         holdings, zero_count = group_accounts(inventory["entries"], target)
         unparsed = inventory["unparsed_account_count"]
         if type(unparsed) is not int or unparsed < 0:
@@ -282,6 +285,7 @@ def wallet_inventory(address, record, target=None) -> dict[str, Any]:
         status="success" if complete else "partial",
         inventory_complete=complete,
         sol_balance=record["facts"].get("sol_balance"),
+        sol_lamports=lamports,
         holdings=holdings if known_inventory else None,
         zero_accounts_omitted=zero_count if known_inventory else None,
         unparsed_account_count=unparsed,

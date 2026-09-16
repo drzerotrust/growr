@@ -11,6 +11,7 @@ from growr_cli.models import (
     ScanReport,
 )
 from growr_cli.scanners.base import BaseScanner
+from growr_cli.scanners.observations import activity_fields, optional_result
 from growr_cli.solana.inventory import token_account_entries
 from growr_cli.solana.rpc import (
     SPL_TOKEN_PROGRAM_ID,
@@ -61,13 +62,17 @@ class WalletScanner(BaseScanner):
             token_2022_future = pool.submit(
                 self._get_accounts_for_program, wallet, TOKEN_2022_PROGRAM_ID
             )
-            sol_balance = balance_future.result()
-            signatures = signatures_future.result()
+            sol_balance = optional_result(balance_future, report, "balance")
+            signatures = optional_result(
+                signatures_future, report, "signatures"
+            )
             spl_accounts, spl_error = spl_future.result()
             token_2022_accounts, token_2022_error = token_2022_future.result()
 
         report.summary["sol_balance"] = sol_balance
-        report.summary["recent_signature_count"] = len(signatures)
+        report.summary.update(
+            activity_fields(signatures, report, "signatures")
+        )
         report.summary["token_accounts"] = self._token_account_summary(
             wallet,
             spl_accounts,
@@ -95,7 +100,7 @@ class WalletScanner(BaseScanner):
                     "on-chain RPC",
                 )
             )
-        if len(signatures) == 0:
+        if signatures == []:
             report.findings.append(
                 Finding(
                     "low",
