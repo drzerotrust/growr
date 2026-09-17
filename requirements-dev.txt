@@ -1,4 +1,6 @@
 -r requirements.txt
+build>=1.2,<2
+setuptools>=77,<85
 mypy
 pytest
 ruff

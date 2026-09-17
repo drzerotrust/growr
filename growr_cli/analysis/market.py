@@ -37,7 +37,8 @@ def combine_metrics(
         for snapshot in (jupiter, launch):
             value = snapshot.market.get(name)
             if number(value) is not None:
-                market[name] = metric(value, snapshot.source)
+                scope = "pool" if snapshot.source == "stonks" else "token"
+                market[name] = metric(value, snapshot.source, scope)
                 break
     market["token_liquidity_usd"] = jupiter.market["token_liquidity_usd"]
     market["stonks_volume_24h_usd"] = launch.market["stonks_volume_24h_usd"]

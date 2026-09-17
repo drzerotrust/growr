@@ -11,7 +11,7 @@ from typing import Any
 from solders.pubkey import Pubkey
 from solders.signature import Signature
 
-from scripts.playbooks.evidence import measured_requests, validate_activity
+from growr_cli.playbooks.evidence import measured_requests, validate_activity
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -190,29 +190,57 @@ class GrowrRunner:
             raise ValueError("Invalid Jupiter mint batch")
         return self._execute(["search", "jupiter", ",".join(mints)])
 
-    def _execute(self, command):
+    def capture(self, command, validator, rpc_limit, http_limit, timeout):
+        """Run a bounded command with a public-contract validator."""
+
+        return self._execute(
+            command,
+            validator=validator,
+            rpc_limit=rpc_limit,
+            http_limit=http_limit,
+            timeout=timeout,
+        )
+
+    def _execute(
+        self,
+        command,
+        *,
+        validator=None,
+        rpc_limit=None,
+        http_limit=None,
+        timeout=None,
+    ):
         """Enforce the shared subprocess budget and capture output."""
 
         if len(self.scans) >= self.max_calls:
             raise ValueError("Playbook subprocess budget exceeded")
         receipt = scan_receipt(command)
         self.scans.append(receipt)
+        limits = []
+        for flag, value in (
+            ("--max-rpc-calls", rpc_limit),
+            ("--max-http-calls", http_limit),
+        ):
+            if value is not None:
+                limits.extend([flag, str(value)])
         try:
             # An argument list avoids shell interpretation. The child
             # loads the root .env; endpoints never enter the receipts.
             result = subprocess.run(
                 [
                     sys.executable,
-                    str(PROJECT_ROOT / "growr.py"),
+                    "-m",
+                    "growr",
                     "--json",
                     "--no-color",
+                    *limits,
                     *command,
                 ],
                 cwd=PROJECT_ROOT,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
-                timeout=self.timeout,
+                timeout=self.timeout if timeout is None else timeout,
                 check=False,
                 shell=False,
             )
@@ -226,9 +254,9 @@ class GrowrRunner:
         if result.returncode != 0:
             receipt["error"] = "growr_failed"
             return None
-        return self._read_result(result.stdout, receipt, command)
+        return self._read_result(result.stdout, receipt, command, validator)
 
-    def _read_result(self, output, receipt, command):
+    def _read_result(self, output, receipt, command, validator=None):
         """Discard malformed output without exposing its contents."""
 
         try:
@@ -237,11 +265,14 @@ class GrowrRunner:
                 parse_constant=reject_constant,
                 parse_float=finite_number,
             )
-            evidence = (
-                search_records(document, command[2].split(","))
-                if command[0] == "search"
-                else scan_record(document, *command[:2])
-            )
+            if validator is not None:
+                evidence = validator(document)
+            else:
+                evidence = (
+                    search_records(document, command[2].split(","))
+                    if command[0] == "search"
+                    else scan_record(document, *command[:2])
+                )
             coverage = (
                 evidence["coverage"]
                 if isinstance(evidence, dict)

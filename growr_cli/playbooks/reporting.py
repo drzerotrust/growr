@@ -7,9 +7,9 @@ from decimal import Decimal
 from functools import partial
 from typing import Any
 
-from scripts.playbooks.evidence import measured_totals
-from scripts.playbooks.holdings import token_amount
-from scripts.playbooks.runner import valid_address
+from growr_cli.playbooks.evidence import measured_totals
+from growr_cli.playbooks.holdings import token_amount
+from growr_cli.playbooks.runner import valid_address
 
 NOTES = [
     "Owner addresses may belong to pools or program authorities; they do "
@@ -49,7 +49,7 @@ def build_parser(playbook) -> argparse.ArgumentParser:
     token = playbook == "token_holders"
     target = "MINT" if token else "WALLET"
     parser = argparse.ArgumentParser(
-        prog="python3 scripts/playbooks/%s.py" % playbook,
+        prog="growr playbook %s" % playbook.replace("_", "-"),
         description=(
             "Inspect sampled token owners and their nonzero holdings."
             if token
@@ -58,10 +58,10 @@ def build_parser(playbook) -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
-            "  python3 scripts/playbooks/%s.py <%s>\n"
-            "  python3 scripts/playbooks/%s.py <%s> --json --no-jupiter\n\n"
-            "Each child calls growr.py --json using this interpreter and "
-            "the root .env.\n"
+            "  growr playbook %s <%s>\n"
+            "  growr playbook %s <%s> --json --no-jupiter\n\n"
+            "Each child calls Growr JSON using this interpreter and "
+            "the selected environment configuration.\n"
             "Jupiter metadata needs JUPITER_API_KEY in .env. Each batch "
             "looks up at most\n100 distinct mints in one HTTP request "
             "and makes no RPC calls. RPC fallback\n"
@@ -70,7 +70,12 @@ def build_parser(playbook) -> argparse.ArgumentParser:
             "No retries or recursive "
             "holder expansion."
         )
-        % (playbook, target, playbook, target),
+        % (
+            playbook.replace("_", "-"),
+            target,
+            playbook.replace("_", "-"),
+            target,
+        ),
     )
     parser.add_argument("address", metavar=target, type=address_argument)
     parser.add_argument(

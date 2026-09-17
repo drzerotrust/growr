@@ -6,9 +6,9 @@ from unittest.mock import Mock
 
 import pytest
 
+from growr_cli.playbooks import activity, shared_holdings
+from growr_cli.playbooks.runner import GrowrRunner
 from growr_cli.scanners.history import HistoryScanner
-from scripts.playbooks import activity, shared_holdings
-from scripts.playbooks.runner import GrowrRunner
 from tests.conftest import make_signature_record
 from tests.test_history import ADDRESS, OTHER, SIGNATURE, transaction_body
 from tests.test_machine import output_for

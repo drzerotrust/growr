@@ -108,8 +108,16 @@ def _log_timeout() -> None:
 def log_configuration(args, rpc_url, rpc_override) -> None:
     """Check active settings before creating network clients."""
 
-    env_exists = (settings.PROJECT_ROOT / ".env").is_file()
-    origin = ".env loaded" if env_exists else "no .env file"
+    environment = settings.ENVIRONMENT_FILE
+    if environment["status"] == "invalid":
+        raise ConfigurationError(
+            "Unable to read environment file; check GROWR_ENV_FILE "
+            "or the selected local .env"
+        )
+    origin = "%s configuration (%s)" % (
+        environment["source"],
+        environment["status"],
+    )
     LOGGER.info(
         "Configuration: %s; process environment takes precedence. "
         "Unset values use .env.example defaults.",

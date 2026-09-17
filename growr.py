@@ -11,8 +11,9 @@ from typing import NoReturn
 
 from solders.pubkey import Pubkey
 
-from growr_cli import settings
+from growr_cli import __version__, settings
 from growr_cli.configuration import ConfigurationError, log_configuration
+from growr_cli.doctor import add_doctor_parser, run_doctor
 from growr_cli.enrichment import LaunchEnricher
 from growr_cli.enrichment.on_chain import OnChainEnricher
 from growr_cli.enrichment.stonks_token import StonksTokenContext
@@ -43,6 +44,11 @@ from growr_cli.machine.response import Run, build_response, serialize
 from growr_cli.machine.schema import response_schema
 from growr_cli.models import ScanReport, SearchReport
 from growr_cli.output import renderer_for
+from growr_cli.playbook_commands import (
+    add_playbook_parser,
+    run_playbook,
+    validate_playbook_flags,
+)
 from growr_cli.requests import RequestBudget
 from growr_cli.safety import redact_endpoint, safe_text
 from growr_cli.scanners import (
@@ -151,6 +157,9 @@ def build_parser() -> argparse.ArgumentParser:
     # become True when supplied. Hyphens become underscores in attribute
     # names, such as args.rpc_url.
     parser.add_argument(
+        "--version", action="version", version="growr %s" % __version__
+    )
+    parser.add_argument(
         "--rpc-url",
         help=(
             "Override Helius, SOLANA_RPC_URL, CUSTOM_RPC_URL, and public "
@@ -210,6 +219,8 @@ def build_parser() -> argparse.ArgumentParser:
     # rejects an invocation that supplies no command.
     subparsers = parser.add_subparsers(dest="scan_type", required=True)
     add_history_parsers(subparsers)
+    add_doctor_parser(subparsers)
+    add_playbook_parser(subparsers)
 
     # schema needs no address or provider options. Its handler later
     # prints the JSON contract without opening network connections.
@@ -706,6 +717,8 @@ def _parse_arguments(run):
     parser = build_parser()
     try:
         args = parser.parse_args()
+        if args.scan_type == "playbook":
+            validate_playbook_flags(parser, sys.argv[1:])
         if args.include_raw and not args.json:
             parser.error("--include-raw requires --json")
         _validate_search_arguments(parser, args)
@@ -764,6 +777,10 @@ def main() -> int:
     args = _parse_arguments(run)
     if args is None:
         return 2
+    if args.scan_type == "doctor":
+        return run_doctor(args)
+    if args.scan_type == "playbook":
+        return run_playbook(args)
     if args.scan_type == "schema":
         print(json.dumps(response_schema(), allow_nan=False, indent=2))
         return 0

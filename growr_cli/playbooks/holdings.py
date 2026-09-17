@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 from typing import Any
 
-from scripts.playbooks.runner import GrowrRunner, valid_address
+from growr_cli.playbooks.runner import GrowrRunner, valid_address
 
 
 def raw_units(value) -> int:

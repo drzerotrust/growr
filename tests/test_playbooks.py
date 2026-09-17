@@ -10,14 +10,14 @@ import pytest
 from solders.pubkey import Pubkey
 
 from growr_cli.models import ScanReport
-from scripts.playbooks import token_holders, wallet_holdings
-from scripts.playbooks.holdings import (
+from growr_cli.playbooks import token_holders, wallet_holdings
+from growr_cli.playbooks.holdings import (
     MintResolver,
     group_accounts,
     sampled_owners,
     wallet_inventory,
 )
-from scripts.playbooks.runner import PROJECT_ROOT, GrowrRunner
+from growr_cli.playbooks.runner import PROJECT_ROOT, GrowrRunner
 from tests.test_machine import STAMP, output_for
 
 
@@ -98,25 +98,26 @@ def wallet_document(owner=OWNER, entries=(), failed_program=None):
 
 def child_commands(monkeypatch, documents):
     def run(command, **kwargs):
-        assert command[:4] == [
+        assert command[:5] == [
             sys.executable,
-            str(PROJECT_ROOT / "growr.py"),
+            "-m",
+            "growr",
             "--json",
             "--no-color",
         ]
         assert kwargs["cwd"] == PROJECT_ROOT
         assert kwargs["shell"] is False
         assert kwargs["capture_output"] is True
-        kind, target = command[4:6]
+        kind, target = command[5:7]
         if kind == "search":
             assert target == "jupiter"
-            assert len(command) == 7
-            target = command[6]
-        elif kind == "history":
-            assert command[6:8] == ["--limit", "10"]
             assert len(command) == 8
+            target = command[7]
+        elif kind == "history":
+            assert command[7:9] == ["--limit", "10"]
+            assert len(command) == 9
         else:
-            assert command[6:] == (
+            assert command[7:] == (
                 ["--no-jupiter", "--no-rugcheck"] if kind == "token" else []
             )
         result = documents[(kind, target)]
@@ -129,7 +130,7 @@ def child_commands(monkeypatch, documents):
         )
 
     process = Mock(side_effect=run)
-    monkeypatch.setattr("scripts.playbooks.runner.subprocess.run", process)
+    monkeypatch.setattr("growr_cli.playbooks.runner.subprocess.run", process)
     return process
 
 
@@ -204,7 +205,7 @@ def test_token_playbook_aggregates_owners_and_reuses_mint_scans(
     assert (
         report["wallets"][1]["holdings"][1]["amount_tokens"] == "0.000000123"
     )
-    assert [call.args[0][4:6] for call in process.call_args_list] == [
+    assert [call.args[0][5:7] for call in process.call_args_list] == [
         ["token", MINT],
         ["wallet", OWNER],
         ["wallet", SECOND_OWNER],
@@ -476,7 +477,7 @@ def test_full_playbook_with_real_fixture_subprocesses(
         "print(path.read_text())\n"
         "print('private child diagnostic', file=sys.stderr)\n"
     )
-    monkeypatch.setattr("scripts.playbooks.runner.PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr("growr_cli.playbooks.runner.PROJECT_ROOT", tmp_path)
 
     assert (
         token_holders.main(
@@ -567,7 +568,7 @@ def test_invalid_options_are_offline(monkeypatch, main, arguments):
 @pytest.mark.parametrize("module", ["token_holders", "wallet_holdings"])
 def test_playbook_help_runs_as_a_real_subprocess(module):
     result = subprocess.run(
-        [sys.executable, "-m", "scripts.playbooks.%s" % module, "--help"],
+        [sys.executable, "-m", "growr_cli.playbooks.%s" % module, "--help"],
         cwd=PROJECT_ROOT,
         capture_output=True,
         text=True,
@@ -605,12 +606,12 @@ def test_real_growr_child_is_resolved_from_another_directory(
     # An invalid command variant avoids network while exercising actual
     # interpreter, path, capture, environment and JSON failure behavior.
     monkeypatch.chdir(tmp_path)
-    from scripts.playbooks import runner as runner_module
+    from growr_cli.playbooks import runner as runner_module
 
     original = subprocess.run
 
     def reject_command(command, **kwargs):
-        command[4] = "scan"
+        command[5] = "scan"
         return original(command, **kwargs)
 
     monkeypatch.setattr(runner_module.subprocess, "run", reject_command)
@@ -732,11 +733,13 @@ def test_console_unknown_decimals_never_become_token_quantities(
 def test_playbooks_consume_cli_without_importing_workflows():
     import ast
 
-    for path in (PROJECT_ROOT / "scripts" / "playbooks").glob("*.py"):
+    for path in (PROJECT_ROOT / "growr_cli" / "playbooks").glob("*.py"):
         tree = ast.parse(path.read_text())
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom):
-                assert not (node.module or "").startswith("growr")
+                assert not (node.module or "").startswith("growr") or (
+                    node.module or ""
+                ).startswith("growr_cli.playbooks")
             elif isinstance(node, ast.Import):
                 assert all(
                     not alias.name.startswith("growr") for alias in node.names

@@ -1,0 +1,11 @@
+include README.md LICENSE pyproject.toml growr.py
+recursive-include growr_cli *.py
+prune skills
+prune .agents
+prune .codex
+prune docs
+prune data
+prune webapp
+prune tests
+prune scripts
+exclude client.py AGENTS.md REFERENCES.md .env .env.* skills-lock.json

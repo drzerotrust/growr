@@ -1,6 +1,10 @@
+[build-system]
+requires = ["setuptools>=77,<85"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "growr"
-version = "0.2.0"
+dynamic = ["version"]
 description = "Read-only Solana token, token-account, and wallet analysis CLI."
 readme = "README.md"
 license = "MIT"
@@ -13,8 +17,24 @@ dependencies = [
     "solders>=0.23,<0.27",
 ]
 
+[project.scripts]
+growr = "growr:main"
+
+[tool.setuptools]
+py-modules = ["growr"]
+include-package-data = false
+
+[tool.setuptools.packages.find]
+include = ["growr_cli", "growr_cli.*"]
+namespaces = false
+
+[tool.setuptools.dynamic]
+version = {attr = "growr_cli.__version__"}
+
 [project.optional-dependencies]
 dev = [
+    "build>=1.2,<2",
+    "setuptools>=77,<85",
     "jsonschema[format-nongpl]>=4,<5",
     "mypy",
     "pytest",

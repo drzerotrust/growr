@@ -8,9 +8,9 @@ from unittest.mock import Mock
 import pytest
 from spl.token.constants import TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID
 
+from growr_cli.playbooks import token_holders, wallet_holdings
+from growr_cli.playbooks.runner import GrowrRunner
 from growr_cli.searchers.jupiter import JupiterTokenSearcher
-from scripts.playbooks import token_holders, wallet_holdings
-from scripts.playbooks.runner import GrowrRunner
 from tests.test_machine import output_for
 from tests.test_playbooks import (
     MINT,
@@ -80,7 +80,7 @@ def test_default_enrichment_shares_metadata_across_wallets(
     assert output.err == ""
     assert report["status"] == "success"
     assert process.call_count == 4
-    assert process.call_args.args[0][4:] == ["search", "jupiter", query]
+    assert process.call_args.args[0][5:] == ["search", "jupiter", query]
     target, other = report["wallets"][0]["holdings"]
     assert target["amount_source"] == "rpc"
     assert other["amount_source"] == "jupiter"
@@ -350,7 +350,7 @@ def test_real_subprocess_metadata_workflow(monkeypatch, tmp_path, capsys):
         "print(path.read_text())\n"
         "print('secret', file=sys.stderr)\n"
     )
-    monkeypatch.setattr("scripts.playbooks.runner.PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr("growr_cli.playbooks.runner.PROJECT_ROOT", tmp_path)
     assert wallet_holdings.main([OWNER]) == 0
     output = capsys.readouterr()
     assert "1.23 tokens" in output.out

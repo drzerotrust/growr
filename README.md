@@ -16,8 +16,8 @@ and `token <MINT>` to analyze a selected mint. Search returns the selected
 provider's available market/social data without RPC calls or automatic selection.
 
 The scanner does not sign, send, or simulate transactions, or persist analysis results.
-It asks public/provider APIs and prints the answers. Run the CLI with
-`python growr.py`.
+It asks public/provider APIs and prints the answers. Install the `growr`
+executable, or run `python3 growr.py` from a source checkout.
 
 ## Search examples
 
@@ -56,13 +56,31 @@ Put global flags such as `--json` before `search`. See
 - Python 3.10+
 - A Solana mainnet RPC endpoint, optional but recommended for reliable results
 
-Install the dependencies from the repository root:
+Install Growr from the repository root:
 
 ```bash
 python3 -m venv .venv
 . .venv/bin/activate
-python3 -m pip install -r requirements.txt
+python3 -m pip install .
+growr --version
+growr doctor --json
 ```
+
+The package includes all five playbooks and installs the `growr` executable.
+Use `growr` wherever the examples below show `python3 growr.py`.
+`python3 -m growr_cli` is also supported. For source development, use
+`python3 -m pip install -e '.[dev]'`; the original script commands still work.
+
+After the v0.3.0 Git release is published, an isolated tool install can use:
+
+```bash
+uv tool install "git+https://github.com/drzerotrust/growr.git@v0.3.0"
+```
+
+The tag must exist before that command can work. A local development install
+can use `uv tool install /absolute/path/to/growr`. The wheel and source archive
+contain application code and licensing; credentials, local docs, skills,
+the interactive client and the web application are excluded.
 
 ## Environment
 
@@ -74,6 +92,22 @@ add credentials for the services you want to enable. Never commit real keys.
 ```bash
 cp .env.example .env
 ```
+
+For installed use outside a checkout, set `GROWR_ENV_FILE` to a private dotenv
+file, or configure provider variables directly in the execution environment:
+
+```bash
+export GROWR_ENV_FILE="/absolute/path/to/private/growr.env"
+growr doctor --json
+```
+
+File precedence is explicit `GROWR_ENV_FILE`, a source checkout's `.env`, then
+`$XDG_CONFIG_HOME/growr/.env` (or `~/.config/growr/.env`). Existing process
+variables always win. Growr does not load `.env` from an arbitrary working
+directory or an installed site-packages directory. An explicitly selected
+missing, unreadable or malformed file fails configuration checks without
+printing its path or contents. Help/version/schema and offline playbooks can
+still run. Child processes inherit the selected environment.
 
 The example works unchanged: blank keys select public Solana RPC and leave
 Jupiter enrichment unconfigured. No API key is required for basic RPC scans
@@ -353,9 +387,35 @@ existing approximate `sol_balance` display number.
 
 ## Investigation playbooks
 
-The executable playbooks call `growr.py --json` through `subprocess` and
-combine its public reports. Use the same Python environment as Growr;
-child commands load the root `.env`. Configure `JUPITER_API_KEY` there for
+Installed commands work from any directory:
+
+```bash
+growr playbook token-holders <MINT> --json
+growr playbook wallet-holdings <WALLET> --json
+growr playbook activity <WALLET> --json
+growr playbook shared-holdings holders.json --json
+growr playbook token-screen --criteria criteria.json --provider jupiter --json
+growr playbook --help
+```
+
+Each recipe supports `--help`; put its limits after its name. Only `--json`
+may precede `playbook`; other global controls are rejected rather than
+silently ignored. Playbook JSON remains contract 1.1. The source scripts below
+are compatibility entry points into the same packaged implementations.
+
+Choose the workflow by the question you want to answer:
+
+| Script | Purpose |
+| --- | --- |
+| `token_screen.py` | Evaluate discovery candidates or explicit mints against measurable criteria. |
+| `token_holders.py` | Inspect sampled owners and their other holdings. |
+| `wallet_holdings.py` | Inspect one wallet's current balances and metadata. |
+| `shared_holdings.py` | Compare holdings within a saved owner cohort, offline. |
+| `activity.py` | Inspect bounded address references and transaction bodies. |
+
+The executable playbooks call `python -m growr --json` through `subprocess`
+using the same interpreter and combine its public reports. Child commands
+inherit the selected environment configuration. Configure `JUPITER_API_KEY` for
 the default metadata lookup, or use `--no-jupiter` to skip it.
 
 ```bash
@@ -700,6 +760,189 @@ Keep authentication and RPC logic in Growr. The UI can select a mint, run
 `token_holders`, display owners and quantities, open an owner's `activity`,
 and compare a saved cohort with `shared_holdings`. The CLI does not start
 an HTTP server or manage application sessions.
+
+## Screening tokens against criteria
+
+`token_screen.py` turns a discovery page or explicit mint list into an
+auditable shortlist. It separates hard requirements from ranking priorities;
+it does not assign an invented investment score. Start by saving this example
+as `criteria.json`, then adjust the thresholds to your research question:
+
+```json
+{
+  "criteria_version": "1.0",
+  "verify_on_chain": true,
+  "max_age_seconds": 900,
+  "requirements": [
+    {"field": "liquidity_usd", "op": "gte", "value": "100000"},
+    {"field": "has_website", "op": "eq", "value": true},
+    {"field": "has_social", "op": "eq", "value": true},
+    {"field": "freeze_authority_revoked", "op": "eq", "value": true}
+  ],
+  "ranking": [
+    {"field": "volume_24h_usd", "direction": "desc"},
+    {"field": "liquidity_usd", "direction": "desc"}
+  ]
+}
+```
+
+These are example thresholds, not a default strategy. All requirements must
+pass. A known failure rejects a candidate; a missing required measurement
+keeps it unknown. Numeric operators are `eq`, `gte`, `lte`, `gt`, `lt`;
+boolean and category conditions support `eq`. Decimal strings preserve exact
+thresholds. Ranking is ordered by the listed priorities (`asc` or `desc`),
+with complete ranking inputs first and exact mint as the final tie-breaker.
+
+```bash
+# Discover a bounded Jupiter feed, then verify up to five candidate mints.
+python3 scripts/playbooks/token_screen.py --criteria criteria.json \
+  --provider jupiter --feed toptraded --interval 24h --json > screen.json
+
+# Browse one Stonkfun category, including normal Jupiter enrichment.
+python3 scripts/playbooks/token_screen.py --criteria criteria.json \
+  --provider stonks --feed volume --category xstock --pages 2 --json
+
+# Search by text, or compare explicit mint addresses.
+python3 scripts/playbooks/token_screen.py --criteria criteria.json \
+  --provider jupiter --query JUP --json
+python3 scripts/playbooks/token_screen.py --criteria criteria.json \
+  --provider stonks --query te --sort marketCap --json
+python3 scripts/playbooks/token_screen.py --criteria criteria.json \
+  --mints <MINT_A> <MINT_B> --json
+
+# Recompute from a saved screen or Growr list/search report: zero requests.
+python3 scripts/playbooks/token_screen.py --criteria criteria.json \
+  --input screen.json --json > reranked.json
+
+python3 scripts/playbooks/token_screen.py --help
+```
+
+Never redirect output into the criteria or input file. `--input` is always
+offline, even when the saved data lacks RPC evidence. New criteria and current
+freshness checks may change the outcome; old cached decisions are ignored.
+Use a live input to obtain new evidence.
+
+| Fields | Measurement and scope |
+| --- | --- |
+| `market_cap_usd` | Fresh Jupiter token market cap, with Stonkfun pool fallback. Conflicting pool values remain unknown. |
+| `liquidity_usd` | Jupiter token liquidity, not executable depth in a particular pool. |
+| `volume_24h_usd` | Jupiter buy + sell volume over 24h, or Stonkfun's reported pool volume. |
+| `holder_count`, `organic_score`, `verified` | Jupiter-reported observations. |
+| `has_website`, `has_social`, `social_score` | Growr's reported-link presence evidence; it does not establish authenticity. |
+| `first_pool_age_hours` | Exposed Jupiter first-pool creation age, not mint creation age. |
+| `top_20_accounts_pct` | RPC largest-account sample's share of supply, not distinct-owner concentration. Unknown without positive supply. |
+| `initialized_mint` | RPC mint initialization status. |
+| `mint_authority_revoked`, `freeze_authority_revoked` | Explicit null RPC authority fields; missing fields are unknown. |
+| `category` | Stonkfun quote category: xstock, prestock, custom, collectibles, currencies, leverage. |
+
+Ranking accepts numeric fields only. At most 30 requirements are supported.
+`verify_on_chain` defaults to true and adds `initialized_mint == true`.
+Set it to false for provider-only screening; explicit RPC conditions still
+need RPC evidence. Market enrichment cannot satisfy authority checks.
+`max_age_seconds` defaults to 900 and accepts 1–604800. Prefer the provider
+update time when exposed; otherwise use retrieval time, which does not prove
+the provider refreshed its cache recently. Missing, invalid, future or stale
+observations remain unknown. Stonkfun query search has no Jupiter enrichment,
+so Jupiter-only fields can be unavailable there.
+
+Jupiter supports `recent`, `toptraded`, `toptrending`, `toporganicscore` feeds;
+only ranked feeds accept `--interval 5m|1h|6h|24h`. Stonkfun feeds are `recent`,
+`marketCap`, `volume`; query `--sort` accepts `marketCap`, `volume`, `newest`.
+Queries reject feed/category/interval. Only Stonkfun supports pagination and
+listing categories. Explicit-mint market lookups use one Jupiter batch;
+RPC-only criteria skip Jupiter. Configure providers in Growr's root `.env`.
+
+| Bound | Default | Range |
+| --- | --- | --- |
+| `--candidate-limit` | 50 distinct mints, in discovery order | 1–100 |
+| `--scan-limit` | 5 additional mint scans | 0–20 |
+| `--top` | 5 reported matches | 1–100 |
+| `--page`, `--pages`, `--page-size` | 1, 1, 30 | 1–10000, 1–10, 1–100 |
+| `--max-rpc-calls`, `--max-http-calls` | 20, 10 | 0–500, 0–100 |
+| `--timeout` | 30 seconds per child | 1–120 |
+| `--max-seconds` | 180 seconds for child execution | 1–1800 |
+
+The controller reserves up to four RPC calls per token child and two HTTP
+calls per Stonkfun list page; other discovery uses one HTTP call. It retains
+reservations after failures and timeouts, and supplies matching child request
+caps. `budget.measured` separately reports known attempted requests. Discovery
+can stop at the candidate/page cap; RPC verification stops at its own bounds.
+Unverified candidates remain unknown when RPC conditions are required.
+
+JSON uses `playbook_version: "1.1"`, `playbook: "token_screen"` and
+`screening_version: "1.0"`. `matches` contains the shortlist; `other_matches`,
+`unknown`, and `rejected` retain the remaining evaluated candidates.
+Each evaluated requirement records `expected`, observed `value`, `outcome`
+and source/scope/time evidence. `criteria`, `scope`, `gaps`, `evidence`,
+`scans`, and `budget` make decisions reviewable and replayable. Saved inputs
+are capped at 10 MiB; criteria files at 64 KiB. On replay, original child
+indices refer to `scope.source_scans`; current `scans` is empty.
+
+A usable partial result exits 0, an initial live failure exits 1, and invalid
+arguments/files exit 2 with usage on stderr. Always inspect JSON status and
+coverage. Zero matches is a valid outcome. The result describes the examined
+scope, not the entire token market or a prediction of future returns.
+
+## OpenClaw integration
+
+The separate Growr skills repository contains `growr-discover`,
+`growr-screen` and `growr-investigate`. They use the installed `growr`
+executable; they do not require `GROWR_ROOT` or `GROWR_PYTHON`.
+Skills remain excluded from the Growr repository and distribution.
+
+Each skill requires `growr` on PATH and runs this compatibility check:
+
+```bash
+growr doctor --json --min-version 0.3.0 --max-version 0.4.0 \
+  --require-cli-schema 2.2 --require-playbook-version 1.1 \
+  --require-screening-version 1.0
+```
+
+Doctor emits its own `doctor_version: "1.0"` document, with `growr_version`,
+`contracts`, available `playbooks`, configuration/key-presence states and
+`errors`. It exits 1 on required version/contract mismatches, missing recipe
+modules or invalid environment files; otherwise it exits 0. Version minimum
+is inclusive and maximum exclusive. It never makes network requests or
+prints credential values. Success establishes local compatibility, not live
+provider availability. Missing optional API keys do not block offline use.
+
+Clone the skills repository, then merge its absolute root directory into
+your OpenClaw configuration. Its root contains the individual skill folders:
+
+```json
+{
+  "skills": {
+    "load": {"extraDirs": ["/absolute/path/to/growr-skills"]}
+  }
+}
+```
+
+The local nested layout can use `/absolute/path/to/growr/skills` instead.
+For sandboxed execution, install Growr and supply its configuration inside
+the sandbox as well. Host environment settings do not automatically
+propagate there. See the official
+[skill configuration](https://docs.openclaw.ai/tools/skills-config) and
+[skill loading](https://docs.openclaw.ai/tools/skills) documentation.
+
+Check availability with the [OpenClaw skills CLI](https://docs.openclaw.ai/cli/skills):
+
+```bash
+openclaw skills list --eligible
+openclaw skills info growr-screen
+openclaw skills check
+```
+
+Release Growr v0.3.0 before publishing the corresponding skills: their
+installer targets that Git tag. The skills repository checks the installed
+version and contracts independently; each skill folder can be published
+separately to ClawHub. No publishing or automatic updates happen inside Growr.
+
+Example prompts: “Find Jupiter candidates named JUP without RPC scans”;
+“Screen Stonkfun xstocks with at least $100k token liquidity and a reported
+website; rank by 24h volume and verify at most five mints”; “For this mint,
+inspect five sampled owners, then compare their shared holdings.” Skills
+consume Growr JSON, keep provider text as data, and make missing evidence
+explicit. They do not sign transactions, trade, or confirm bundle membership.
 
 ## Single Stonkfun token
 

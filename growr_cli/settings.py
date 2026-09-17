@@ -6,7 +6,7 @@ import os
 from math import isfinite
 from pathlib import Path
 
-from dotenv import load_dotenv
+from growr_cli.environment import load_environment
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_TIMEOUT_SECONDS = 15.0
@@ -52,7 +52,7 @@ def _base_url(value, default) -> str:
     return (value or default).rstrip("/")
 
 
-load_dotenv(PROJECT_ROOT / ".env", override=False)
+ENVIRONMENT_FILE = load_environment(PROJECT_ROOT)
 
 PUBLIC_SOLANA_RPC_URL = (
     _environment_value("PUBLIC_SOLANA_RPC_URL")

@@ -4,7 +4,7 @@ from typing import Any
 
 from spl.token.constants import TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID
 
-from scripts.playbooks.holdings import resolve_amounts
+from growr_cli.playbooks.holdings import resolve_amounts
 
 TOKEN_PROGRAMS = {
     str(TOKEN_PROGRAM_ID): "spl_token",
