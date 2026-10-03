@@ -15,9 +15,10 @@ Use `list` to browse feeds, `search <jupiter|stonks> <QUERY>` to find candidates
 and `token <MINT>` to analyze a selected mint. Search returns the selected
 provider's available market/social data without RPC calls or automatic selection.
 
-The scanner does not sign, send, or simulate transactions, or persist analysis results.
-It asks public/provider APIs and prints the answers. Install the `growr`
-executable, or run `python3 growr.py` from a source checkout.
+The scanner does not sign, send, or simulate transactions. It asks
+public/provider APIs and prints the answers. Optional snapshot storage and
+GoodCalls save observations and recommendations locally in SQLite.
+Install the `growr` executable, or run `python3 growr.py` from a source checkout.
 
 ## Search examples
 
@@ -77,6 +78,10 @@ After the v0.3.0 Git release is published, an isolated tool install can use:
 uv tool install "git+https://github.com/drzerotrust/growr.git@v0.3.0"
 ```
 
+Next, follow [Installed or uv setup](#installed-or-uv-setup) to create
+`~/.config/growr/.env`. Installing the tool does not create this file or
+configure your provider keys.
+
 The tag must exist before that command can work. A local development install
 can use `uv tool install /absolute/path/to/growr`. The wheel and source archive
 contain application code and licensing; credentials, local docs, skills,
@@ -84,22 +89,91 @@ the interactive client and the web application are excluded.
 
 ## Environment
 
-Configure `.env` in the repository root (next to `growr.py`) before running,
-or deliberately use the built-in defaults shown in `.env.example`. Process
-environment variables override `.env` values. Copy the included example and
-add credentials for the services you want to enable. Never commit real keys.
+### Installed or uv setup
+
+Installed Growr uses these locations by default, independently of the folder
+you run it from:
+
+| File | Default location | Purpose |
+| --- | --- | --- |
+| Environment file | `~/.config/growr/.env` | Provider keys and optional settings |
+| SQLite database | `~/.config/growr/growr.db` | Saved snapshots and GoodCalls |
+
+If `XDG_CONFIG_HOME` is set, both files use `$XDG_CONFIG_HOME/growr/` instead.
+Run the following as the same user who will run Growr. It creates the
+environment file if needed and preserves any existing contents:
+
+```bash
+mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/growr"
+touch "${XDG_CONFIG_HOME:-$HOME/.config}/growr/.env"
+chmod 600 "${XDG_CONFIG_HOME:-$HOME/.config}/growr/.env"
+```
+
+Open that `.env` file in your editor and add the settings you need:
+
+```dotenv
+# Required for Jupiter list/search; optional for token enrichment.
+JUPITER_API_KEY=
+# Optional: use Helius for RPC instead of the public default.
+HELIUS_API_KEY=
+```
+
+Fill in your real keys for the services you use. Blank keys allow public
+Solana RPC scans and Stonks discovery; Jupiter discovery needs its key.
+Other settings have built-in defaults, so an installed user does not need
+a source checkout or a copy of `.env.example`. Never commit real keys.
+
+Check configuration after saving the file:
+
+```bash
+growr doctor --json
+```
+
+Doctor checks configuration locally; it does not contact providers or verify
+that a key is valid. Each new Growr invocation reads the selected `.env`.
+
+The database and its parent directory are created when a command first uses
+storage, such as `list --store-snapshot`, `snapshot`, or `good-call`.
+Installation, help and doctor do not create a database. It lives outside
+the installed package so reinstalling Growr does not replace saved data.
+
+For existing users, Growr keeps using `~/.growr/growr.db` if it exists and
+the new default database does not. Files are not moved or merged. If both
+exist, the database in the configuration directory wins. Set
+`GROWR_DATABASE_PATH` to an absolute filename to select one explicitly.
+
+### Source checkout
+
+Copy the included example to `.env` next to `growr.py`, if you have not
+already created that file, and edit the provider keys you need:
 
 ```bash
 cp .env.example .env
 ```
 
-For installed use outside a checkout, set `GROWR_ENV_FILE` to a private dotenv
-file, or configure provider variables directly in the execution environment:
+Source runs use the same database selection as installed runs.
+
+### Overrides and loading order
+
+To use a different environment file, set `GROWR_ENV_FILE`:
 
 ```bash
 export GROWR_ENV_FILE="/absolute/path/to/private/growr.env"
 growr doctor --json
 ```
+
+To use a different database, set `GROWR_DATABASE_PATH` in your selected
+`.env` or in the process environment. Prefer an absolute path so all runs
+share the same history:
+
+```dotenv
+GROWR_DATABASE_PATH=/absolute/path/to/growr.db
+```
+
+Blank `GROWR_DATABASE_PATH` uses normal database selection. Selecting a
+different `.env` file does not move the database beside it. Use
+`GROWR_DATABASE_PATH` for that separately. Services and agents must run as
+the intended user with the same configuration and database settings.
 
 File precedence is explicit `GROWR_ENV_FILE`, a source checkout's `.env`, then
 `$XDG_CONFIG_HOME/growr/.env` (or `~/.config/growr/.env`). Existing process
@@ -1123,9 +1197,11 @@ JSON preserves returned pagination and one normalized record per pool. With
 An empty page is `no_data`; invalid requests reported by Stonks exit nonzero.
 
 `--store-snapshot` on `list` or `search` persists each returned observation
-in the local SQLite database
-for later comparisons. The default database is `~/.growr/growr.db`; set
-`GROWR_DATABASE_PATH` to choose another file. Persistence does not add output
+in the local SQLite database for later comparisons. New databases default to
+`~/.config/growr/growr.db` (or `$XDG_CONFIG_HOME/growr/growr.db`). Existing
+`~/.growr/growr.db` is reused when the new default file is absent. Set
+`GROWR_DATABASE_PATH` to choose another file; see [Environment](#environment).
+Persistence does not add output
 to stdout, so JSON remains safe for agent pipelines. Only discovery records are
 stored by this option; the command must still complete successfully first.
 

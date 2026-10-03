@@ -107,6 +107,55 @@ def test_archives_exclude_local_files_and_other_repositories(
             assert not any(part.startswith(".env") for part in relative)
 
 
+@pytest.mark.parametrize("selection", ["default", "dotenv", "process"])
+def test_installed_command_uses_user_database(
+    installed_distribution, tmp_path, selection
+):
+    _, _, _, installed_environment = installed_distribution
+    environment = dict(installed_environment, HOME=str(tmp_path))
+    for variable in [
+        "GROWR_ENV_FILE",
+        "GROWR_DATABASE_PATH",
+        "XDG_CONFIG_HOME",
+    ]:
+        environment.pop(variable, None)
+
+    config = tmp_path / ".config" / "growr" / ".env"
+    config.parent.mkdir(parents=True)
+    database = config.parent / "growr.db"
+    config_text = ""
+    if selection in ["dotenv", "process"]:
+        database = tmp_path / "dotenv-data" / "growr.db"
+        config_text = "GROWR_DATABASE_PATH=%s\n" % database
+    config.write_text(config_text)
+    if selection == "process":
+        database = tmp_path / "process-data" / "growr.db"
+        environment["GROWR_DATABASE_PATH"] = str(database)
+
+    # Offline configuration checks must not create storage files.
+    command = [sys.executable, "-m", "growr"]
+    run_command(command + ["doctor", "--json"], tmp_path, environment)
+    assert not database.exists()
+
+    # Storage commands create SQLite outside the installed package.
+    result = run_command(
+        command
+        + [
+            "--json",
+            "good-call",
+            "So11111111111111111111111111111111111111112",
+            "--check",
+        ],
+        tmp_path,
+        environment,
+    )
+    report = json.loads(result.stdout)
+    assert report["data"]["already_reported"] is False
+    assert result.stderr == ""
+    assert database.is_file()
+    assert list(tmp_path.rglob("*.db")) == [database]
+
+
 def test_installed_console_module_and_children_resolve_packaged_code(
     installed_distribution,
 ):

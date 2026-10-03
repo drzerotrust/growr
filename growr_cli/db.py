@@ -6,7 +6,6 @@ token snapshots.
 """
 
 import datetime
-import os
 from pathlib import Path
 
 from peewee import (
@@ -24,10 +23,9 @@ from peewee import (
 )
 from playhouse.sqlite_ext import JSONField
 
-DEFAULT_DATABASE_PATH = Path.home() / ".growr" / "growr.db"
-DATABASE_PATH = Path(
-    os.environ.get("GROWR_DATABASE_PATH", str(DEFAULT_DATABASE_PATH))
-).expanduser()
+from growr_cli.environment import database_file
+
+DATABASE_PATH = database_file()
 
 db = SqliteDatabase(
     str(DATABASE_PATH),

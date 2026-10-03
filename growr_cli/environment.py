@@ -8,6 +8,34 @@ from dotenv import load_dotenv
 from dotenv.parser import parse_stream
 
 
+def user_config_directory() -> Path:
+    """Locate Growr's user files without creating the directory."""
+
+    config_root = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    if config_root:
+        return Path(config_root).expanduser() / "growr"
+    return Path.home() / ".config" / "growr"
+
+
+def database_file() -> Path:
+    """Select an override, the user database, or legacy data."""
+
+    explicit = os.environ.get("GROWR_DATABASE_PATH", "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
+
+    database_path = user_config_directory() / "growr.db"
+    if database_path.exists():
+        return database_path
+
+    # Preserve access to saved snapshots and call history on upgrade.
+    # Do not move an SQLite file that another process might be using.
+    legacy_path = Path.home() / ".growr" / "growr.db"
+    if legacy_path.is_file():
+        return legacy_path
+    return database_path
+
+
 def environment_file(project_root) -> tuple[Path | None, str]:
     """Prefer an explicit file, then checkout or user configuration."""
 
@@ -18,13 +46,7 @@ def environment_file(project_root) -> tuple[Path | None, str]:
     checkout = project_root / ".env"
     if (project_root / "pyproject.toml").is_file() and checkout.is_file():
         return checkout, "checkout"
-    config_root = os.environ.get("XDG_CONFIG_HOME")
-    folder = (
-        Path(config_root).expanduser()
-        if config_root
-        else Path.home() / ".config"
-    )
-    config = folder / "growr" / ".env"
+    config = user_config_directory() / ".env"
     return (config, "user") if config.is_file() else (None, "environment")
 
 
