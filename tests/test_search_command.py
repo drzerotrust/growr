@@ -6,7 +6,9 @@ from unittest.mock import Mock
 import pytest
 
 import growr
+from growr_cli import db as database
 from growr_cli import settings
+from growr_cli.storage import QueryManager
 from tests.test_enrichment import MINT, OTHER
 from tests.test_machine import validate
 
@@ -24,6 +26,31 @@ TOKENS = [
         "analytics": {"on_chain": {"status": "success", "data": {}}},
     },
 ]
+
+
+@pytest.mark.parametrize("store", [False, True])
+def test_search_snapshot_is_opt_in(
+    monkeypatch, capsys, search_io, tmp_path, store
+):
+    path = tmp_path / "search.db"
+    monkeypatch.setattr(database, "DATABASE_PATH", path)
+    flags = ["--store-snapshot"] if store else []
+    monkeypatch.setattr(
+        "sys.argv", ["growr.py", "--json", "search", "jupiter", MINT, *flags]
+    )
+    assert growr.main() == 0
+    output = capsys.readouterr()
+    report = validate(json.loads(output.out))
+    assert output.err == ""
+    assert path.exists() is store
+    if store:
+        success, snapshot = QueryManager(path).get_latest_record_by_mint(MINT)
+        assert success
+        assert str(snapshot["run"]) == report["run"]["id"]
+        assert snapshot["mint"] == MINT
+        assert snapshot["price_usd"] == 0
+        assert snapshot["market_cap_usd"] is None
+        assert snapshot["social_score"] == 80
 
 
 @pytest.fixture

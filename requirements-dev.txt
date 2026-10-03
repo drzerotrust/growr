@@ -6,4 +6,5 @@ pytest
 ruff
 types-requests
 types-jsonschema
+types-peewee
 jsonschema[format-nongpl]>=4,<5

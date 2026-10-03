@@ -15,6 +15,7 @@ dependencies = [
     "requests>=2.32,<3.0",
     "solana>=0.36,<0.37",
     "solders>=0.23,<0.27",
+    "peewee>=3.17,<5.0",
 ]
 
 [project.scripts]
@@ -41,12 +42,13 @@ dev = [
     "ruff",
     "types-requests",
     "types-jsonschema",
+    "types-peewee",
 ]
 
 [tool.ruff]
 line-length = 79
 target-version = "py310"
-extend-exclude = ["venv", ".venv", ".agents"]
+extend-exclude = ["venv", ".venv", ".agents", "migrations"]
 force-exclude = true
 
 [tool.ruff.lint]
@@ -106,6 +108,7 @@ module = [
     "solana.*",
     "solders.*",
     "dotenv",
+    "playhouse.*",
 ]
 ignore_missing_imports = true
 

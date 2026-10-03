@@ -28,6 +28,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import growr
 from growr_cli import settings
+from growr_cli.cli_validators import (
+    validate_search_arguments,
+    validate_target,
+)
 from growr_cli.configuration import log_configuration
 from growr_cli.enrichment.launches import LaunchEnricher
 from growr_cli.enrichment.on_chain import OnChainEnricher
@@ -82,8 +86,8 @@ def arguments(*command):
 
     parser = growr.build_parser()
     args = parser.parse_args(["--json", *command])
-    growr._validate_search_arguments(parser, args)
-    growr._validate_target(parser, args)
+    validate_search_arguments(parser, args)
+    validate_target(parser, args)
     return args
 
 
@@ -268,7 +272,7 @@ def main() -> int:
     flags = ["--stonk"] if options.stonk else []
     if not 1 <= options.max_requests <= 30:
         parser.error("--max-requests must be between 1 and 30")
-    growr._validate_target(parser, arguments("token", options.mint))
+    validate_target(parser, arguments("token", options.mint))
     budget = RequestBudget(options.max_requests)
     results = []
     request_send = requests.Session.send

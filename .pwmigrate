@@ -1,0 +1,5 @@
+database = growr_cli.db.db
+models = growr_cli.db
+directory = ./migrations
+
+

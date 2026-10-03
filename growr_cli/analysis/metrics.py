@@ -13,13 +13,19 @@ def number(value) -> float | None:
         result = float(value)
     except (ValueError, OverflowError):
         return None
-    return result if math.isfinite(result) else None
+    if not math.isfinite(result):
+        return None
+
+    return result
 
 
 def mapping(value) -> dict[str, Any]:
     """Accept provider objects only when they are dictionaries."""
 
-    return value if isinstance(value, dict) else {}
+    if isinstance(value, dict):
+        return value
+
+    return {}
 
 
 def metric(value, source, scope="token") -> dict[str, Any]:

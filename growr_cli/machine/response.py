@@ -43,63 +43,114 @@ def request_metadata(args) -> dict[str, Any]:
 
     if args is None:
         return {"command": None, "target": None, "options": {}, "rpc": None}
+
     options = {"include_raw": args.include_raw}
     if args.scan_type == "search":
-        options.update(source=args.provider, mode="search", query=args.query)
-        if args.provider == "stonks":
-            options.update(
-                sort=args.sort, page=args.page, page_size=args.page_size
-            )
+        _add_search_options(options, args)
     elif args.scan_type == "list":
-        source = args.provider
-        options["source"] = source
-        options["mode"] = (
-            args.stonk_search if args.stonk else args.jupiter_search
-        )
-        options["on_chain"] = args.on_chain
-        if not args.stonk:
-            options.update(interval=args.interval, limit=args.limit)
-        if args.stonk:
-            options.update(
-                page=args.page or 1,
-                page_size=args.page_size or 30,
-                category=args.category,
-            )
+        _add_list_options(options, args)
     elif args.scan_type == "token":
-        options.update(
-            jupiter=not (args.stonk or args.no_jupiter),
-            rugcheck=not (args.stonk or args.no_rugcheck),
-        )
-        if args.stonk:
-            options["stonk"] = True
-            options["compare_rewards"] = args.compare_to is not None
-    uses_rpc = args.scan_type not in {"list", "search"} or getattr(
-        args, "on_chain", False
-    )
+        _add_token_options(options, args)
+
+    uses_rpc = _uses_rpc(args)
     if uses_rpc:
         options["commitment"] = getattr(args, "commitment", "finalized")
     options.update(_history_options(args))
-    rpc = "CLI --rpc-url override" if args.rpc_url else settings.RPC_LABEL
+
+    rpc = _rpc_label(args)
     return {
         "command": args.scan_type,
-        "target": getattr(
-            args,
-            "signature",
-            getattr(args, "mint", getattr(args, "address", None)),
-        ),
+        "target": _target(args),
         "options": options,
         "rpc": rpc if uses_rpc else None,
     }
+
+
+def _add_search_options(options, args) -> None:
+    """Add the selected search provider's safe options."""
+
+    options.update(source=args.provider, mode="search", query=args.query)
+    if getattr(args, "store_snapshot", False):
+        options["store_snapshot"] = True
+    if args.provider == "stonks":
+        options.update(
+            sort=args.sort,
+            page=args.page,
+            page_size=args.page_size,
+        )
+
+
+def _add_list_options(options, args) -> None:
+    """Add safe options for a Jupiter or Stonks listing."""
+
+    options["source"] = args.provider
+    if args.stonk:
+        options["mode"] = args.stonk_search
+        options.update(
+            page=args.page or 1,
+            page_size=args.page_size or 30,
+            category=args.category,
+        )
+    else:
+        options["mode"] = args.jupiter_search
+        options.update(interval=args.interval, limit=args.limit)
+    options["on_chain"] = args.on_chain
+    options["store_snapshot"] = getattr(args, "store_snapshot", False)
+
+
+def _add_token_options(options, args) -> None:
+    """Add safe provider selections for a token scan."""
+
+    options.update(
+        jupiter=not (args.stonk or args.no_jupiter),
+        rugcheck=not (args.stonk or args.no_rugcheck),
+    )
+    if args.stonk:
+        options["stonk"] = True
+        options["compare_rewards"] = args.compare_to is not None
+
+
+def _uses_rpc(args) -> bool:
+    """Return whether a command reads the Solana RPC."""
+
+    if args.scan_type in {"snapshot", "good-call"}:
+        return False
+    if args.scan_type in {"list", "search"}:
+        return getattr(args, "on_chain", False)
+
+    return True
+
+
+def _rpc_label(args):
+    """Choose the safe RPC label for a request."""
+
+    if args.rpc_url:
+        return "CLI --rpc-url override"
+
+    return settings.RPC_LABEL
+
+
+def _target(args):
+    """Return the requested address or signature, if one exists."""
+
+    if hasattr(args, "signature"):
+        return args.signature
+    if hasattr(args, "mint"):
+        return args.mint
+    if hasattr(args, "address"):
+        return args.address
+
+    return None
 
 
 def _history_options(args) -> dict[str, Any]:
     """Describe the exact requested address-history window."""
 
     if args.scan_type == "history":
-        return {
-            key: getattr(args, key)
-            for key in ("limit", "before", "until", "details")
-        }
+        options = {}
+        for key in ("limit", "before", "until", "details"):
+            options[key] = getattr(args, key)
+        return options
     return {}
 
 

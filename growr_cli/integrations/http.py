@@ -37,7 +37,10 @@ def retry_delay(value) -> int | None:
     if not isinstance(value, str) or len(value) > 128:
         return None
     if value.isascii() and value.isdecimal():
-        return int(value) if len(value) <= 10 else None
+        if len(value) > 10:
+            return None
+
+        return int(value)
     try:
         retry_at = parsedate_to_datetime(value)
         if retry_at.tzinfo is None:
@@ -160,8 +163,12 @@ class HttpClient:
         data, error = self.get_json(url, params, headers, source=source)
         if error:
             return [], error
-        if not isinstance(data, list) or any(
-            not isinstance(item, dict) for item in data
-        ):
+
+        if not isinstance(data, list):
             return [], "%s returned an unexpected response shape" % source
+
+        for item in data:
+            if not isinstance(item, dict):
+                return [], "%s returned an unexpected response shape" % source
+
         return data, None

@@ -25,5 +25,6 @@ webapp/
 # Local environments, logs, and editor files.
 /venv/
 /logs/
+.growr/
 *.swp
 *.swo

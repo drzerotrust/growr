@@ -115,16 +115,19 @@ def sampled_owners(record, limit) -> dict[str, Any]:
                 owners[owner] = [entry]
             else:
                 owners[owner].append(entry)
-    selected = [
-        {
-            "address": owner,
-            "sample_raw_amount": str(
-                sum(int(account["raw_amount"]) for account in accounts)
-            ),
-            "sample_accounts": accounts,
-        }
-        for owner, accounts in owners.items()
-    ]
+    selected = []
+    for owner, accounts in owners.items():
+        total_raw_amount = 0
+        for account in accounts:
+            total_raw_amount += int(account["raw_amount"])
+
+        selected.append(
+            {
+                "address": owner,
+                "sample_raw_amount": str(total_raw_amount),
+                "sample_accounts": accounts,
+            }
+        )
     # Ranking describes only this sample. Wallet scans later observe
     # all returned accounts, at separate timestamps, for each owner.
     selected.sort(key=lambda item: -int(item["sample_raw_amount"]))

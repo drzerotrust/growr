@@ -8,6 +8,7 @@ from solders.pubkey import Pubkey
 
 import growr
 from growr_cli import settings
+from growr_cli.cli_parsers import _normalize_snapshot_mint
 from growr_cli.solana.rpc import SPL_TOKEN_PROGRAM_ID
 from tests.conftest import make_mint_bytes, make_token_account_bytes
 from tests.test_enrichment import MINT, OTHER
@@ -286,7 +287,11 @@ def test_jupiter_gaps_preserve_direct_rpc_report(
         ),
         (
             ["stonks", "--jupiter-search", "recent"],
-            "Jupiter search options require list jupiter",
+            "Stonks does not support --jupiter-search",
+        ),
+        (
+            ["stonks", "--limit", "10"],
+            "Stonks does not support --limit (use --page-size",
         ),
     ],
 )
@@ -393,3 +398,29 @@ def test_removed_scan_command_fails_before_network(
         assert output.out == ""
     http.assert_not_called()
     rpc.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["snapshot", "latest", MINT],
+        ["snapshot", "latest", "--mint", MINT],
+    ],
+)
+def test_snapshot_accepts_positional_or_option_mint(arguments):
+    parser = growr.build_parser()
+
+    args = parser.parse_args(arguments)
+    _normalize_snapshot_mint(parser, args)
+
+    assert args.mint == MINT
+
+
+def test_snapshot_rejects_conflicting_mints():
+    parser = growr.build_parser()
+    args = parser.parse_args(["snapshot", "latest", MINT, "--mint", OTHER])
+
+    with pytest.raises(SystemExit) as error:
+        _normalize_snapshot_mint(parser, args)
+
+    assert error.value.code == 2

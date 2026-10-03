@@ -1097,6 +1097,8 @@ python growr.py list stonks --stonk-search marketCap
 python growr.py list stonks --stonk-search volume --page 2 --page-size 30
 python growr.py list stonks --stonk-search marketCap --category xstock
 python growr.py list stonks --stonk-search volume --category collectibles
+python growr.py --json list stonks --stonk-search marketCap \
+  --page-size 30 --store-snapshot
 ```
 
 `--stonk-search` accepts `recent` (the default), `marketCap`, or `volume`.
@@ -1119,6 +1121,63 @@ volume column shows the ranking value separately from enriched metrics, which ca
 JSON preserves returned pagination and one normalized record per pool. With
 `--include-raw`, `raw.discovery` also retains the original `data`/`meta` envelope. Only returned `data.tokens` enter the rankings.
 An empty page is `no_data`; invalid requests reported by Stonks exit nonzero.
+
+`--store-snapshot` on `list` or `search` persists each returned observation
+in the local SQLite database
+for later comparisons. The default database is `~/.growr/growr.db`; set
+`GROWR_DATABASE_PATH` to choose another file. Persistence does not add output
+to stdout, so JSON remains safe for agent pipelines. Only discovery records are
+stored by this option; the command must still complete successfully first.
+
+### Avoid repeating recent token calls
+
+A snapshot records an observation. A GoodCall with `--status reported`
+records a token selected for a response. Use the latter to check whether
+you already called a mint; simply scanning or saving a token does not count.
+
+```bash
+# Check calls from yesterday's midnight through now, in this timezone.
+growr --json good-call <MINT> --check --timezone America/Mexico_City
+
+# Save evidence for a selected token if you do not have a snapshot yet.
+growr --json search jupiter <MINT> --store-snapshot
+growr --json snapshot latest --mint <MINT>
+
+# Use the snapshot's data.id. Save only if no recent reported call exists.
+growr --json good-call <MINT> --snapshot-id <ID> --if-new \
+  --timezone America/Mexico_City --decision shortlist \
+  --reasons 'Why this candidate was selected'
+```
+
+The check returns `data.already_reported` and `data.last_call`. True means
+skip that mint and evaluate the next candidate. The guarded save returns
+`data.created: true` with the saved call, or `data.created: false` and
+`data.already_reported: true` if another call already exists. Both are
+successful operations (exit 0); argument errors exit 2 and database failures
+exit 1. Treat a failed check as unknown history, never as a fresh mint.
+`--if-new` records `status: reported` and checks/inserts under one write lock.
+Without it, ordinary `good-call <MINT> --snapshot-id <ID>` can still save
+decisions without suppressing duplicates. Only status `reported` is counted.
+
+Use the same persistent database and timezone across runs. The default
+timezone is UTC; the window covers today and yesterday's calendar dates,
+not the past 48 hours. New call timestamps include a UTC offset; older
+timestamps without an offset are interpreted in the requested timezone.
+Checks use the call creation time, regardless of how old its snapshot is.
+History is shared across agents/strategies/providers in that database.
+These commands make no network requests. Growr records the selection; it
+does not confirm delivery to a messaging service.
+
+The `growr-screen` skill enables this workflow only with `fresh-calls` in
+the user's task. Example: “fresh-calls: find recent Jupiter tokens with
+$100,000–$1,000,000 market cap; skip tokens reported today or yesterday in
+America/Mexico_City.” Without the keyword, screening does not consult or
+write call history. A requested weaker fallback must also be unreported
+and clearly labeled. Use the requested empty-result sentence when no
+candidate remains. This mode requires a CLI with the options shown above;
+an older installation may need updating.
+
+### Stonks listing enrichment
 
 The default view shows market and risk tables for every returned launch.
 Jupiter supplies token price, liquidity, holder counts, audit indicators,
