@@ -212,6 +212,22 @@ def test_pool_age_is_creation_age_and_missing_is_unknown():
     )
 
 
+@pytest.mark.parametrize(
+    "age,decision",
+    [(0, "pass"), (48, "pass"), (48.0001, "fail"), (-1, "unknown")],
+)
+def test_first_pool_age_bounds(age, decision):
+    created = (NOW - timedelta(hours=age)).isoformat()
+    settings = criteria(
+        rule("first_pool_age_hours", 0, "gte"),
+        rule("first_pool_age_hours", 48, "lte"),
+    )
+    result = evaluate_document(
+        discovery(firstPool={"createdAt": created}), settings
+    )
+    assert result["decision"] == decision
+
+
 @pytest.mark.parametrize("supply", [None, "0"])
 def test_missing_or_zero_supply_cannot_establish_concentration(supply):
     document = rpc_document(supply=supply)

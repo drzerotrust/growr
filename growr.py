@@ -147,28 +147,36 @@ def main() -> int:
 
     run = Run()
     args = _parse_arguments(run)
+
     if args is None:
         return 2
+
     if args.scan_type == "doctor":
         return run_doctor(args)
+
     if args.scan_type == "playbook":
         return run_playbook(args)
+
     if args.scan_type == "schema":
         print(json.dumps(response_schema(), allow_nan=False, indent=2))
         return 0
+
     if args.scan_type in {"snapshot", "good-call"}:
         return _run_database_command(args)
+
     configure_console_logging(
         use_color=not args.no_color,
         quiet=args.quiet,
         enabled=args.verbose or args.quiet,
     )
-    LOGGER.info("Starting %s run", args.scan_type)
+
     rpc_url_override = args.rpc_url.strip() if args.rpc_url else None
     rpc_url = rpc_url_override or settings.RPC_URL
     rpc_label = (
         "CLI --rpc-url override" if rpc_url_override else settings.RPC_LABEL
     )
+
+    LOGGER.info("Starting %s run", args.scan_type)
     with redact_endpoint(rpc_url):
         return _execute_run(args, run, rpc_url, rpc_label, rpc_url_override)
 
@@ -183,14 +191,17 @@ def _execute_run(args, run, rpc_url, rpc_label, rpc_url_override) -> int:
             HttpClient(settings.REQUEST_TIMEOUT_SECONDS, run.budget)
         ) as http:
             report = _build_report(args, rpc_url, rpc_label, http)
+
         requests = run.budget.snapshot()
         LOGGER.info(
             "Requests attempted: %s RPC, %s provider HTTP",
             requests["rpc"]["attempted"],
             requests["http"]["attempted"],
         )
+
         response = _build_response_if_needed(args, run, report)
         _store_snapshot_if_requested(args, response)
+
         LOGGER.info("Rendering %s report", "JSON" if args.json else "console")
         if args.json:
             # Serialize fully before writing to stdout.
@@ -198,6 +209,7 @@ def _execute_run(args, run, rpc_url, rpc_label, rpc_url_override) -> int:
             print(serialize(response))
         else:
             renderer_for(report, use_color=not args.no_color).render(report)
+
     except ConfigurationError as error:
         _log_error(args, "Configuration failed: %s" % error, logger=LOGGER)
         if args.json:

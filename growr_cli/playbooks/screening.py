@@ -66,7 +66,9 @@ def validate_requirement(rule) -> dict[str, Any]:
 
     if not isinstance(rule, dict) or set(rule) != {"field", "op", "value"}:
         raise ValueError("Requirements need field, op and value")
-    name, operation, value = rule["field"], rule["op"], rule["value"]
+    name = rule["field"]
+    operation = rule["op"]
+    value = rule["value"]
     if not isinstance(name, str) or name not in FIELDS:
         raise ValueError("Unsupported screening field")
     if not isinstance(operation, str) or operation not in OPERATORS:
@@ -135,9 +137,13 @@ def validate_criteria(value) -> dict[str, Any]:
         raise ValueError("max_age_seconds must be between 1 and 604800")
     if type(verify) is not bool:
         raise ValueError("verify_on_chain must be a boolean")
+
+    validated_rules = []
+    for rule in rules:
+        validated_rules.append(validate_requirement(rule))
     return {
         "criteria_version": "1.0",
-        "requirements": [validate_requirement(rule) for rule in rules],
+        "requirements": validated_rules,
         "ranking": validate_ranking(value.get("ranking", [])),
         "max_age_seconds": age,
         "verify_on_chain": verify,
@@ -163,17 +169,13 @@ def requirements(criteria) -> list[dict[str, Any]]:
 def select_observation(rows, field, as_of, max_age) -> dict[str, Any]:
     """Require fresh evidence; keep conflicting pool values unknown."""
 
-    candidates = [row for row in rows if row["field"] == field]
+    candidates = []
+    for row in rows:
+        if row["field"] == field:
+            candidates.append(row)
     if not candidates:
         return {"value": None, "reason": "missing", "evidence": []}
-    usable = []
-    for row in candidates:
-        observed = timestamp(row["observed_at"])
-        if observed is None:
-            continue
-        age = (as_of - observed).total_seconds()
-        if 0 <= age <= max_age and row["value"] is not None:
-            usable.append(row)
+    usable = fresh_observations(candidates, as_of, max_age)
     if not usable:
         return {
             "value": None,
@@ -182,13 +184,14 @@ def select_observation(rows, field, as_of, max_age) -> dict[str, Any]:
         }
     # Prefer Jupiter token market data over Stonkfun pool measurements.
     # Preserve pools that were observed on different pages.
-    priority = min(row["priority"] for row in usable)
-    usable = [row for row in usable if row["priority"] == priority]
+    usable = preferred_observations(usable)
     usable = latest_per_entity(usable)
-    values = {
-        Decimal(row["value"]) if field in NUMERIC_FIELDS else row["value"]
-        for row in usable
-    }
+    values = set()
+    for row in usable:
+        value = row["value"]
+        if field in NUMERIC_FIELDS:
+            value = Decimal(value)
+        values.add(value)
     if len(values) != 1:
         return {
             "value": None,
@@ -198,26 +201,56 @@ def select_observation(rows, field, as_of, max_age) -> dict[str, Any]:
     return {"value": usable[0]["value"], "reason": None, "evidence": usable}
 
 
+def fresh_observations(rows, as_of, max_age) -> list[dict[str, Any]]:
+    """Keep known values with valid timestamps inside the age window."""
+
+    usable = []
+    for row in rows:
+        observed = timestamp(row["observed_at"])
+        if observed is None or row["value"] is None:
+            continue
+        age_seconds = (as_of - observed).total_seconds()
+        if 0 <= age_seconds <= max_age:
+            usable.append(row)
+    return usable
+
+
+def preferred_observations(rows) -> list[dict[str, Any]]:
+    """Keep all observations at the best available source priority."""
+
+    best_priority = rows[0]["priority"]
+    for row in rows:
+        best_priority = min(best_priority, row["priority"])
+
+    selected = []
+    for row in rows:
+        if row["priority"] == best_priority:
+            selected.append(row)
+    return selected
+
+
 def latest_per_entity(rows) -> list[dict[str, Any]]:
     """Select the latest observation separately for each source/pool."""
 
-    latest = {
-        (row["source"], row["scope"], row["pool"]): float("-inf")
-        for row in rows
-    }
+    latest = {}
     for row in rows:
         key = (row["source"], row["scope"], row["pool"])
-        observed = timestamp(row["observed_at"])
-        if observed is None:
+        if key not in latest:
+            latest[key] = float("-inf")
+        moment = observation_time(row)
+        if moment is None:
             continue
-        moment = observed.timestamp()
-        latest[key] = max(moment, latest.get(key, moment))
-    return [
-        row
-        for row in rows
-        if observation_time(row)
-        == latest.get((row["source"], row["scope"], row["pool"]))
-    ]
+        if moment > latest[key]:
+            latest[key] = moment
+
+    # Preserve simultaneous observations so conflicts remain detectable.
+    selected = []
+    for row in rows:
+        key = (row["source"], row["scope"], row["pool"])
+        latest_time = latest.get(key, float("-inf"))
+        if observation_time(row) == latest_time:
+            selected.append(row)
+    return selected
 
 
 def observation_time(row) -> float | None:
@@ -232,57 +265,72 @@ def compare(value, rule) -> bool:
 
     target = rule["value"]
     if rule["field"] in NUMERIC_FIELDS:
-        value, target = Decimal(value), Decimal(target)
-    checks = {
-        "eq": lambda: value == target,
-        "gte": lambda: value >= target,
-        "lte": lambda: value <= target,
-        "gt": lambda: value > target,
-        "lt": lambda: value < target,
-    }
-    return checks[rule["op"]]()
+        value = Decimal(value)
+        target = Decimal(target)
+
+    operation = rule["op"]
+    if operation == "eq":
+        return value == target
+    if operation == "gte":
+        return value >= target
+    if operation == "lte":
+        return value <= target
+    if operation == "gt":
+        return value > target
+    if operation == "lt":
+        return value < target
+    raise KeyError(operation)
 
 
 def evaluate(candidate, criteria, as_of) -> dict[str, Any]:
     """Return auditable conditions and ranking inputs for one mint."""
 
     rules = requirements(criteria)
-    names = {rule["field"] for rule in rules + criteria["ranking"]}
-    selected = {
-        name: select_observation(
+    names = set()
+    for rule in rules + criteria["ranking"]:
+        names.add(rule["field"])
+
+    # Resolve each measurement once for both filtering and ranking.
+    selected = {}
+    for name in sorted(names):
+        selected[name] = select_observation(
             candidate["observations"], name, as_of, criteria["max_age_seconds"]
         )
-        for name in sorted(names)
-    }
+
     checks = []
+    outcomes = set()
     for rule in rules:
         observation = selected[rule["field"]]
         value = observation["value"]
         outcome = "unknown"
         if value is not None:
             outcome = "pass" if compare(value, rule) else "fail"
-        checks.append(
-            {
-                **rule,
-                **observation,
-                "expected": rule["value"],
-                "outcome": outcome,
-            }
-        )
-    outcomes = {check["outcome"] for check in checks}
+        check = dict(rule)
+        check.update(observation)
+        check["expected"] = rule["value"]
+        check["outcome"] = outcome
+        checks.append(check)
+        outcomes.add(outcome)
+
+    # A known failure takes precedence over incomplete requirements.
     decision = "unknown" if "unknown" in outcomes else "pass"
     if "fail" in outcomes:
         decision = "fail"
-    ranking = [
-        {**rule, **selected[rule["field"]]} for rule in criteria["ranking"]
-    ]
-    return {
-        **candidate,
-        "decision": decision,
-        "requirements": checks,
-        "ranking": ranking,
-        "ranking_complete": all(row["value"] is not None for row in ranking),
-    }
+    ranking = []
+    ranking_complete = True
+    for rule in criteria["ranking"]:
+        ranked_field = dict(rule)
+        ranked_field.update(selected[rule["field"]])
+        ranking.append(ranked_field)
+        if ranked_field["value"] is None:
+            ranking_complete = False
+
+    result = dict(candidate)
+    result["decision"] = decision
+    result["requirements"] = checks
+    result["ranking"] = ranking
+    result["ranking_complete"] = ranking_complete
+    return result
 
 
 def rank_key(candidate) -> tuple[Any, ...]:

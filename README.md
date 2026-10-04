@@ -876,6 +876,12 @@ python3 scripts/playbooks/token_screen.py --criteria criteria.json \
 python3 scripts/playbooks/token_screen.py --criteria criteria.json \
   --provider stonks --feed volume --category xstock --pages 2 --json
 
+# Combine Jupiter feeds under a shared discovery and verification budget.
+growr playbook token-screen --criteria criteria.json --provider jupiter \
+  --feeds recent toptrending toptraded toporganicscore --interval 1h \
+  --candidate-limit 100 --scan-limit 20 --max-rpc-calls 80 \
+  --max-http-calls 4 --max-seconds 600 --top 10 --json
+
 # Search by text, or compare explicit mint addresses.
 python3 scripts/playbooks/token_screen.py --criteria criteria.json \
   --provider jupiter --query JUP --json
@@ -920,7 +926,19 @@ observations remain unknown. Stonkfun query search has no Jupiter enrichment,
 so Jupiter-only fields can be unavailable there.
 
 Jupiter supports `recent`, `toptraded`, `toptrending`, `toporganicscore` feeds;
-only ranked feeds accept `--interval 5m|1h|6h|24h`. Stonkfun feeds are `recent`,
+only ranked feeds accept `--interval 5m|1h|6h|24h`. Use `--feeds` to combine
+distinct Jupiter feeds, or `--feed` for one. The combined mode fetches every
+selected feed once before sampling. It takes one unseen mint per feed per
+turn, preserving each feed's order, up to the shared `--candidate-limit`.
+Ranked requests each ask for that many results; the interval is omitted for
+recent. No mint is verified twice. Known hard-filter failures skip RPC work.
+Successful feeds remain usable when another fails. `scope.feeds` records
+requests, statuses, counts and receipt indices; overall omitted counts,
+verification gaps and budgets remain in the report. Single-feed defaults
+are unchanged. `--feeds` cannot combine with `--feed`, queries, Stonks,
+explicit mints or offline input.
+
+Stonkfun feeds are `recent`,
 `marketCap`, `volume`; query `--sort` accepts `marketCap`, `volume`, `newest`.
 Queries reject feed/category/interval. Only Stonkfun supports pagination and
 listing categories. Explicit-mint market lookups use one Jupiter batch;
@@ -1244,11 +1262,13 @@ History is shared across agents/strategies/providers in that database.
 These commands make no network requests. Growr records the selection; it
 does not confirm delivery to a messaging service.
 
-The `growr-screen` skill enables this workflow only with `fresh-calls` in
-the user's task. Example: “fresh-calls: find recent Jupiter tokens with
+The `growr-screen` skill enables this workflow with `fresh-calls` in
+the user's task or its named **degenerate** profile. Example: “fresh-calls:
+find recent Jupiter tokens with
 $100,000–$1,000,000 market cap; skip tokens reported today or yesterday in
-America/Mexico_City.” Without the keyword, screening does not consult or
-write call history. A requested weaker fallback must also be unreported
+America/Mexico_City.” Outside that profile, screening without the keyword
+does not consult or write call history. Explicitly disabling history wins.
+A requested weaker fallback must also be unreported
 and clearly labeled. Use the requested empty-result sentence when no
 candidate remains. This mode requires a CLI with the options shown above;
 an older installation may need updating.

@@ -31,9 +31,13 @@ def investigate(options, criteria, saved=None, runner=None) -> dict[str, Any]:
     scope["candidate_limit"] = options.candidate_limit
     scope["candidates_omitted"] = max(0, len(mints) - options.candidate_limit)
     mints = mints[: options.candidate_limit]
-    evidence = [
-        row for row in evidence if row["record"]["identity"]["mint"] in mints
-    ]
+    # Keep selected mint observations, including repeated feeds.
+    selected_evidence = []
+    for entry in evidence:
+        mint = entry["record"]["identity"]["mint"]
+        if mint in mints:
+            selected_evidence.append(entry)
+    evidence = selected_evidence
     if session is not None:
         verify_candidates(evidence, mints, criteria, session)
     return report_result(evidence, mints, criteria, scope, options, session)
@@ -69,10 +73,12 @@ def main(argv=None) -> int:
     options = parser.parse_args(arguments)
     validate_options(parser, options, arguments)
     try:
-        criteria = validate_criteria(read_json(options.criteria, 65536))
-        saved = (
-            saved_evidence(read_json(options.input)) if options.input else None
-        )
+        criteria_document = read_json(options.criteria, 65536)
+        criteria = validate_criteria(criteria_document)
+        saved = None
+        if options.input:
+            input_document = read_json(options.input)
+            saved = saved_evidence(input_document)
     except (ValueError, TypeError, KeyError, AttributeError, RecursionError):
         parser.error(
             "invalid criteria or saved evidence; check the documented contract"

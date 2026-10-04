@@ -96,10 +96,10 @@ def validate_request(request, expected) -> None:
     command, options = expected
     if request["command"] != command or request.get("rpc") is not None:
         raise ValueError("Mismatched discovery command")
-    if any(
-        request["options"].get(key) != value for key, value in options.items()
-    ):
-        raise ValueError("Mismatched discovery options")
+    received_options = request["options"]
+    for key, value in options.items():
+        if received_options.get(key) != value:
+            raise ValueError("Mismatched discovery options")
 
 
 def token_document(document, mint) -> dict[str, Any]:
@@ -165,38 +165,50 @@ def saved_evidence(
         raise ValueError("Expected discovery 2.2 or token_screen 1.0 evidence")
     evidence = document["evidence"]
     mints = document["scope"]["selected_mints"]
+    validate_saved_scope(evidence, mints)
+
+    # Preserve original receipts through repeated offline replays.
+    source_scans = document.get("scans")
+    if not source_scans:
+        source_scans = document["scope"].get("source_scans", [])
+    scope = {
+        "source_as_of": document.get("as_of"),
+        "source_status": document["status"],
+        "source_scope": document["scope"],
+        "source_scans": source_scans,
+    }
+    return evidence, mints, scope
+
+
+def validate_saved_scope(evidence, mints) -> None:
+    """Require bounded evidence for the exact selected Solana mints."""
+
     if not isinstance(evidence, list) or len(evidence) > 10000:
         raise ValueError("Invalid saved evidence collection")
     if not isinstance(mints, list) or len(mints) > 100:
         raise ValueError("Invalid saved candidate scope")
-    if not all(valid_address(mint) for mint in mints) or len(
-        set(mints)
-    ) != len(mints):
-        raise ValueError("Invalid or duplicate saved mints")
+    seen = set()
+    for mint in mints:
+        if not valid_address(mint) or mint in seen:
+            raise ValueError("Invalid or duplicate saved mints")
+        seen.add(mint)
     for entry in evidence:
         validate_record(entry["record"])
         if timestamp(entry["retrieved_at"]) is None:
             raise ValueError("Invalid saved retrieval time")
         if entry["record"]["identity"]["mint"] not in mints:
             raise ValueError("Evidence outside the selected candidate scope")
-    return (
-        evidence,
-        mints,
-        {
-            "source_as_of": document.get("as_of"),
-            "source_status": document["status"],
-            "source_scope": document["scope"],
-            "source_scans": document.get("scans")
-            or document["scope"].get("source_scans", []),
-        },
-    )
 
 
 def evidence_mints(evidence) -> list[str]:
     """Group repeated mints in their original discovery order."""
 
-    return list(
-        dict.fromkeys(
-            entry["record"]["identity"]["mint"] for entry in evidence
-        )
-    )
+    mints = []
+    seen = set()
+    for entry in evidence:
+        identity = entry["record"]["identity"]
+        mint = identity["mint"]
+        if mint not in seen:
+            seen.add(mint)
+            mints.append(mint)
+    return mints

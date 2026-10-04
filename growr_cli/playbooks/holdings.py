@@ -130,7 +130,7 @@ def sampled_owners(record, limit) -> dict[str, Any]:
         )
     # Ranking describes only this sample. Wallet scans later observe
     # all returned accounts, at separate timestamps, for each owner.
-    selected.sort(key=lambda item: -int(item["sample_raw_amount"]))
+    selected.sort(key=owner_sample_amount, reverse=True)
     for owner in selected:
         owner["sample_amount_tokens"] = token_amount(
             owner["sample_raw_amount"], details["decimals"]
@@ -142,6 +142,12 @@ def sampled_owners(record, limit) -> dict[str, Any]:
         "owners_not_selected": max(0, len(selected) - limit),
         "owners": selected[:limit],
     }
+
+
+def owner_sample_amount(owner) -> int:
+    """Sort sampled owner balances as numbers, not integer strings."""
+
+    return int(owner["sample_raw_amount"])
 
 
 def holding_group(mint, program, target) -> dict[str, Any]:
@@ -165,9 +171,11 @@ def group_accounts(entries, target) -> tuple[list[dict[str, Any]], int]:
     seen = set()
     zero_count = 0
     for entry in entries:
-        account, mint = entry["address"], entry["mint"]
+        account = entry["address"]
+        mint = entry["mint"]
         amount = raw_units(entry["raw_amount"])
-        program, state = entry["token_program"], entry["state"]
+        program = entry["token_program"]
+        state = entry["state"]
         if (
             not valid_address(account)
             or not valid_address(mint)
@@ -194,8 +202,9 @@ def group_accounts(entries, target) -> tuple[list[dict[str, Any]], int]:
 def resolve_amounts(holdings, resolver, metadata=None) -> None:
     """Convert units only when the mint program also matches."""
 
+    metadata_by_mint = metadata or {}
     for holding in holdings:
-        information = (metadata or {}).get(
+        information = metadata_by_mint.get(
             holding["mint"], {"source": "jupiter", "status": "skipped"}
         )
         details = amount_details(holding, resolver, information)
@@ -204,17 +213,19 @@ def resolve_amounts(holdings, resolver, metadata=None) -> None:
             details["token_program"] != holding["token_program"]
         ):
             status = "program_mismatch"
-        resolved = status == "resolved"
-        decimals = details["decimals"] if resolved else None
+        # Unknown units stay unknown; never guess a decimal scale.
+        decimals = None
+        amount_tokens = None
+        amount_source = None
+        if status == "resolved":
+            decimals = details["decimals"]
+            amount_tokens = token_amount(holding["raw_amount"], decimals)
+            amount_source = details.get("source")
         holding.update(
             amount_status=status,
-            amount_source=details.get("source") if resolved else None,
+            amount_source=amount_source,
             decimals=decimals,
-            amount_tokens=(
-                token_amount(holding["raw_amount"], decimals)
-                if resolved
-                else None
-            ),
+            amount_tokens=amount_tokens,
             name=information.get("name") or details.get("name"),
             symbol=information.get("symbol") or details.get("symbol"),
             metadata=information,
@@ -266,21 +277,12 @@ def wallet_inventory(address, record, target=None) -> dict[str, Any]:
     if record is None:
         return result
     try:
-        inventory = record["facts"]["token_accounts"]
-        lamports = record["facts"].get("sol_lamports")
+        facts = record["facts"]
+        inventory = facts["token_accounts"]
+        lamports = facts.get("sol_lamports")
         lamports = str(raw_units(lamports)) if lamports is not None else None
         holdings, zero_count = group_accounts(inventory["entries"], target)
-        unparsed = inventory["unparsed_account_count"]
-        if type(unparsed) is not int or unparsed < 0:
-            raise ValueError("Invalid inventory count")
-        known_inventory = any(
-            inventory[key] is not None
-            for key in ("spl_token_account_count", "token_2022_account_count")
-        )
-        complete = unparsed == 0 and all(
-            type(inventory[key]) is int and inventory[key] >= 0
-            for key in ("spl_token_account_count", "token_2022_account_count")
-        )
+        known_inventory, complete = inventory_coverage(inventory)
     except (ValueError, KeyError, TypeError):
         result["error"] = "invalid_wallet_facts"
         return result
@@ -291,6 +293,30 @@ def wallet_inventory(address, record, target=None) -> dict[str, Any]:
         sol_lamports=lamports,
         holdings=holdings if known_inventory else None,
         zero_accounts_omitted=zero_count if known_inventory else None,
-        unparsed_account_count=unparsed,
+        unparsed_account_count=inventory["unparsed_account_count"],
     )
     return result
+
+
+def inventory_coverage(inventory) -> tuple[bool, bool]:
+    """Distinguish a usable response from a complete inventory."""
+
+    unparsed = inventory["unparsed_account_count"]
+    if type(unparsed) is not int or unparsed < 0:
+        raise ValueError("Invalid inventory count")
+
+    known_inventory = False
+    for key in ("spl_token_account_count", "token_2022_account_count"):
+        if inventory[key] is not None:
+            known_inventory = True
+            break
+
+    # Complete coverage requires both programs and no unparsed entries.
+    complete = unparsed == 0
+    if complete:
+        for key in ("spl_token_account_count", "token_2022_account_count"):
+            count = inventory[key]
+            if type(count) is not int or count < 0:
+                complete = False
+                break
+    return known_inventory, complete

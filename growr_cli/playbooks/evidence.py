@@ -16,12 +16,12 @@ def validate_activity(record, command, request) -> None:
     if command[0] != "history":
         return
     options = request["options"]
-    before = (
-        command[command.index("--before") + 1]
-        if "--before" in command
-        else None
-    )
-    limit = int(command[command.index("--limit") + 1])
+    before = None
+    if "--before" in command:
+        before_position = command.index("--before") + 1
+        before = command[before_position]
+    limit_position = command.index("--limit") + 1
+    limit = int(command[limit_position])
     if (
         options.get("details") is not False
         or options.get("limit") != limit
@@ -34,7 +34,8 @@ def validate_activity(record, command, request) -> None:
 def validate_history_facts(facts, limit, before) -> None:
     """Require bounded reference rows and a usable continuation."""
 
-    rows, page = facts["entries"], facts["pagination"]
+    rows = facts["entries"]
+    page = facts["pagination"]
     if (
         facts["scope"] != "address_references"
         or not isinstance(rows, list)
@@ -68,14 +69,12 @@ def measured_requests(run) -> dict[str, Any] | None:
         return None
     counters = {}
     for transport in ("rpc", "http"):
-        counts = {
-            key: requests[transport][key]
-            for key in ("attempted", "failed", "blocked", "limit")
-        }
-        if any(
-            type(value) is not int or value < 0 for value in counts.values()
-        ):
-            raise ValueError("Invalid measured request counts")
+        counts = {}
+        for key in ("attempted", "failed", "blocked", "limit"):
+            value = requests[transport][key]
+            if type(value) is not int or value < 0:
+                raise ValueError("Invalid measured request counts")
+            counts[key] = value
         counters[transport] = counts
     return counters
 
@@ -83,16 +82,19 @@ def measured_requests(run) -> dict[str, Any] | None:
 def measured_totals(scans) -> dict[str, Any]:
     """Separate measured attempts from children with unknown counts."""
 
-    measured = [
-        row["requests"] for row in scans if row.get("requests") is not None
-    ]
+    rpc_attempts = 0
+    http_attempts = 0
+    unmeasured_children = 0
+    for scan in scans:
+        requests = scan.get("requests")
+        if requests is None:
+            unmeasured_children += 1
+            continue
+        rpc_attempts += requests["rpc"]["attempted"]
+        http_attempts += requests["http"]["attempted"]
     return {
-        "rpc_attempts_observed": sum(
-            row["rpc"]["attempted"] for row in measured
-        ),
-        "http_attempts_observed": sum(
-            row["http"]["attempted"] for row in measured
-        ),
-        "unmeasured_children": len(scans) - len(measured),
-        "complete": len(scans) == len(measured),
+        "rpc_attempts_observed": rpc_attempts,
+        "http_attempts_observed": http_attempts,
+        "unmeasured_children": unmeasured_children,
+        "complete": unmeasured_children == 0,
     }

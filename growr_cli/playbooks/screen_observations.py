@@ -32,7 +32,8 @@ def validate_record(record) -> None:
         raise ValueError("Expected a valid Solana mint")
     if kind == "token" and identity.get("address") != mint:
         raise ValueError("Mismatched RPC mint identity")
-    if mapping(record.get("facts")).get("source") != sources[kind]:
+    facts = mapping(record.get("facts"))
+    if facts.get("source") != sources[kind]:
         raise ValueError("Mismatched record source")
     if not isinstance(record.get("metrics"), dict):
         raise ValueError("Expected sourced metrics")
@@ -50,21 +51,28 @@ def observed_at(record, source, fallback) -> str | None:
     values = mapping(jupiter.get("values"))
     if source == "jupiter" and values.get("updated_at") is not None:
         return values["updated_at"]
-    times = [
-        item["fetched_at"]
-        for item in record["coverage"]
-        if isinstance(item, dict)
-        and item.get("source") == source
-        and item.get("status") == "success"
-        and item.get("fetched_at")
-    ]
-    moments = [timestamp(value) for value in times]
-    valid = [moment for moment in moments if moment is not None]
-    return (
-        max(valid).isoformat()
-        if len(valid) == len(times) and valid
-        else fallback
-    )
+
+    # Use successful reads from this source only. Any malformed time
+    # makes the source timing unreliable, so use the retrieval time.
+    fetched_times = []
+    for coverage in record["coverage"]:
+        if not isinstance(coverage, dict):
+            continue
+        if coverage.get("source") != source:
+            continue
+        if coverage.get("status") != "success":
+            continue
+        fetched_at = coverage.get("fetched_at")
+        if not fetched_at:
+            continue
+        fetched_time = timestamp(fetched_at)
+        if fetched_time is None:
+            return fallback
+        fetched_times.append(fetched_time)
+
+    if not fetched_times:
+        return fallback
+    return max(fetched_times).isoformat()
 
 
 def measurement(record, field, value, source, scope, path, fallback, index):
@@ -106,8 +114,9 @@ def jupiter_observations(
         "organic_score": "organic_score",
         "verified": "verified",
     }
-    rows = [
-        measurement(
+    rows = []
+    for field, key in pairs.items():
+        row = measurement(
             record,
             field,
             values.get(key),
@@ -117,43 +126,60 @@ def jupiter_observations(
             fallback,
             index,
         )
-        for field, key in pairs.items()
-    ]
-    stats = mapping(mapping(values.get("activity")).get("24h"))
-    buy, sell = (
-        decimal_value(stats.get("buyVolume")),
-        decimal_value(stats.get("sellVolume")),
+        rows.append(row)
+
+    # Volume combines buys and sells from the same 24-hour window.
+    volume = jupiter_volume_24h(values)
+    volume_row = measurement(
+        record,
+        "volume_24h_usd",
+        volume,
+        "jupiter",
+        "token",
+        "metrics.jupiter.values.activity.24h.buyVolume+sellVolume",
+        fallback,
+        index,
     )
-    total = str(buy + sell) if buy is not None and sell is not None else None
-    if buy is not None and sell is not None and (buy < 0 or sell < 0):
-        total = None
-    rows.append(
-        measurement(
-            record,
-            "volume_24h_usd",
-            total,
-            "jupiter",
-            "token",
-            "metrics.jupiter.values.activity.24h.buyVolume+sellVolume",
-            fallback,
-            index,
-        )
+    rows.append(volume_row)
+
+    age_hours = first_pool_age_hours(values, as_of)
+    age_row = measurement(
+        record,
+        "first_pool_age_hours",
+        age_hours,
+        "jupiter",
+        "token",
+        "metrics.jupiter.values.first_pool.createdAt",
+        fallback,
+        index,
     )
-    created = timestamp(mapping(values.get("first_pool")).get("createdAt"))
-    age = (as_of - created).total_seconds() / 3600 if created else None
-    rows.append(
-        measurement(
-            record,
-            "first_pool_age_hours",
-            age,
-            "jupiter",
-            "token",
-            "metrics.jupiter.values.first_pool.createdAt",
-            fallback,
-            index,
-        )
-    )
+    rows.append(age_row)
     return rows
+
+
+def jupiter_volume_24h(values) -> str | None:
+    """Sum known nonnegative volumes from the 24-hour window."""
+
+    activity = mapping(values.get("activity"))
+    daily_stats = mapping(activity.get("24h"))
+    buy_volume = decimal_value(daily_stats.get("buyVolume"))
+    sell_volume = decimal_value(daily_stats.get("sellVolume"))
+    if buy_volume is None or sell_volume is None:
+        return None
+    if buy_volume < 0 or sell_volume < 0:
+        return None
+    return str(buy_volume + sell_volume)
+
+
+def first_pool_age_hours(values, as_of) -> float | None:
+    """Measure pool age; do not confuse it with token creation time."""
+
+    first_pool = mapping(values.get("first_pool"))
+    created_at = timestamp(first_pool.get("createdAt"))
+    if created_at is None:
+        return None
+    elapsed = as_of - created_at
+    return elapsed.total_seconds() / 3600
 
 
 def pooled_observations(record, fallback, index) -> list[dict[str, Any]]:
@@ -170,8 +196,10 @@ def pooled_observations(record, fallback, index) -> list[dict[str, Any]]:
     )
     rows = []
     for field, group, key in paths:
-        item = mapping(mapping(metrics.get(group)).get(key))
-        source, scope = item.get("source"), item.get("scope")
+        group_metrics = mapping(metrics.get(group))
+        item = mapping(group_metrics.get(key))
+        source = item.get("source")
+        scope = item.get("scope")
         valid_scope = (source, scope) in {
             ("jupiter", "token"),
             ("stonks", "pool"),
@@ -216,17 +244,15 @@ def social_observations(record, fallback, index) -> list[dict[str, Any]]:
 
     social = mapping(record.get("social"))
     coverage = mapping(social.get("coverage"))
-    sources = sorted(
-        key for key in ("jupiter", "stonks") if coverage.get(key) == "success"
-    )
+    sources = []
+    for source in ("jupiter", "stonks"):
+        if coverage.get(source) == "success":
+            sources.append(source)
     if not sources:
         return []
     # Merged social scores describe presence, not authenticity.
     # Use the oldest participating source time for its freshness bound.
-    times = [observed_at(record, source, fallback) for source in sources]
-    moments = [timestamp(value) for value in times]
-    valid = [moment for moment in moments if moment is not None]
-    observed = min(valid).isoformat() if len(valid) == len(times) else None
+    observed = social_observed_at(record, sources, fallback)
     platforms = social.get("platforms")
     has_social = bool(platforms) if isinstance(platforms, list) else None
     fields = {
@@ -234,12 +260,13 @@ def social_observations(record, fallback, index) -> list[dict[str, Any]]:
         "has_social": has_social,
         "social_score": social.get("score"),
     }
+    incomplete = False
+    for state in coverage.values():
+        if state not in {"success", "skipped", "no_data"}:
+            incomplete = True
+
     rows = []
     for field, value in fields.items():
-        incomplete = any(
-            state not in {"success", "skipped", "no_data"}
-            for state in coverage.values()
-        )
         if incomplete and (value is False or field == "social_score"):
             value = None
         row = measurement(
@@ -257,6 +284,19 @@ def social_observations(record, fallback, index) -> list[dict[str, Any]]:
     return rows
 
 
+def social_observed_at(record, sources, fallback) -> str | None:
+    """Date merged social evidence by its oldest contributing source."""
+
+    source_times = []
+    for source in sources:
+        observed = observed_at(record, source, fallback)
+        source_time = timestamp(observed)
+        if source_time is None:
+            return None
+        source_times.append(source_time)
+    return min(source_times).isoformat()
+
+
 def rpc_observations(record, fallback, index) -> list[dict[str, Any]]:
     """Distinguish missing authorities from explicit revocations."""
 
@@ -268,12 +308,12 @@ def rpc_observations(record, fallback, index) -> list[dict[str, Any]]:
         if name in mint and (value is None or valid_address(value)):
             revoked = value is None
         fields["%s_revoked" % name] = revoked
-    rows = [
-        measurement(
+    rows = []
+    for name, value in fields.items():
+        row = measurement(
             record, name, value, "rpc", "token", "facts.mint", fallback, index
         )
-        for name, value in fields.items()
-    ]
+        rows.append(row)
     holders = mapping(record["facts"].get("holders"))
     supply = decimal_value(mint.get("supply"))
     concentration = (
@@ -299,10 +339,13 @@ def rpc_observations(record, fallback, index) -> list[dict[str, Any]]:
 def candidates_from_evidence(evidence, mints, as_of) -> list[dict[str, Any]]:
     """Deduplicate mints and retain source and pool observations."""
 
-    candidates = {
-        mint: {"mint": mint, "observations": [], "evidence_indices": []}
-        for mint in mints
-    }
+    candidates = {}
+    for mint in mints:
+        candidates[mint] = {
+            "mint": mint,
+            "observations": [],
+            "evidence_indices": [],
+        }
     for index, entry in enumerate(evidence):
         record = entry["record"]
         validate_record(record)

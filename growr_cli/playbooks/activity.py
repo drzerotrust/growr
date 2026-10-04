@@ -107,7 +107,11 @@ def investigate(options, runner) -> dict[str, Any]:
     """Collect references, then spend the body budget once per ID."""
 
     started = datetime.now(timezone.utc).isoformat()
-    addresses = list(dict.fromkeys([options.address, *options.token_account]))
+    # Read each supplied address once, preserving the requested order.
+    addresses = []
+    for address in [options.address, *options.token_account]:
+        if address not in addresses:
+            addresses.append(address)
     signatures = {}
     windows = []
     for address in addresses:
@@ -123,6 +127,8 @@ def investigate(options, runner) -> dict[str, Any]:
                     "detail_status": "not_requested",
                 }
             signatures[signature]["references"].append(reference)
+    # Several address pages may reference the same transaction. Fetch
+    # its body once and retain every address that referenced it.
     for index, item in enumerate(signatures.values()):
         if (
             index >= options.transactions
@@ -135,16 +141,7 @@ def investigate(options, runner) -> dict[str, Any]:
         if record is not None:
             item["transaction"] = record["facts"]["transaction"]
             item["detail_status"] = runner.scans[-1]["status"]
-    partial = any(
-        row["detail_status"] != "success" for row in signatures.values()
-    )
-    partial = partial or any(
-        row["stop_reason"] not in {"page_limit", "provider_page_exhausted"}
-        for row in windows
-    )
-    status = "partial" if partial else "success"
-    if not signatures and all(not row["pages"] for row in windows):
-        status = "error"
+    status = activity_status(signatures, windows)
     return {
         "playbook_version": "1.1",
         "playbook": "activity",
@@ -169,6 +166,29 @@ def investigate(options, runner) -> dict[str, Any]:
             "No lifetime completeness, bundle membership or PnL is inferred.",
         ],
     }
+
+
+def activity_status(signatures, windows) -> str:
+    """Distinguish missing activity from incomplete details."""
+
+    status = "success"
+    for transaction in signatures.values():
+        if transaction["detail_status"] != "success":
+            status = "partial"
+
+    has_pages = False
+    for window in windows:
+        if window["pages"]:
+            has_pages = True
+        if window["stop_reason"] not in {
+            "page_limit",
+            "provider_page_exhausted",
+        }:
+            status = "partial"
+
+    if not signatures and not has_pages:
+        return "error"
+    return status
 
 
 def main(argv=None) -> int:

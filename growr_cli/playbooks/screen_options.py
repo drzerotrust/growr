@@ -6,6 +6,8 @@ from typing import Any
 
 from growr_cli.playbooks.reporting import address_argument, bounded_integer
 
+JUPITER_FEEDS = ("recent", "toptraded", "toptrending", "toporganicscore")
+
 
 def build_parser() -> argparse.ArgumentParser:
     """Describe live and offline screening with explicit work bounds."""
@@ -19,6 +21,9 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="Examples:\n"
         "  growr playbook token-screen --criteria criteria.json "
         "--provider stonks --category xstock --json\n"
+        "  growr playbook token-screen --criteria criteria.json "
+        "--provider jupiter --feeds recent toptrending toptraded "
+        "toporganicscore --interval 1h --json\n"
         "  growr playbook token-screen --criteria criteria.json "
         "--mints <MINT> --json\n"
         "  growr playbook token-screen --criteria criteria.json "
@@ -37,7 +42,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--input", help="Saved discovery or screen JSON; no network."
     )
     parser.add_argument("--query", help="Name/symbol query instead of a feed.")
-    parser.add_argument("--feed", help="Provider feed; defaults to recent.")
+    feeds = parser.add_mutually_exclusive_group()
+    feeds.add_argument("--feed", help="Provider feed; defaults to recent.")
+    feeds.add_argument(
+        "--feeds",
+        nargs="+",
+        choices=JUPITER_FEEDS,
+        help="Combine distinct Jupiter feeds under one shared budget. "
+        "Sample unique mints in turns across feeds before verification.",
+    )
     parser.add_argument(
         "--category",
         choices=(
@@ -87,6 +100,7 @@ def validate_options(parser, options, argv) -> None:
     discovery_flags = {
         "--query",
         "--feed",
+        "--feeds",
         "--category",
         "--interval",
         "--sort",
@@ -94,24 +108,40 @@ def validate_options(parser, options, argv) -> None:
         "--pages",
         "--page-size",
     }
-    supplied = {
-        value.split("=", 1)[0] for value in argv if value.startswith("--")
-    }
+    # Track explicitly supplied flags, including --flag=value syntax.
+    supplied = set()
+    for value in argv:
+        if value.startswith("--"):
+            flag = value.split("=", 1)[0]
+            supplied.add(flag)
     if not options.provider and supplied & discovery_flags:
         parser.error("discovery options require --provider")
     if options.mints and len(options.mints) > options.candidate_limit:
         parser.error("explicit mints exceed --candidate-limit")
     if options.query is not None:
-        options.query = options.query.strip()
-        if (
-            not options.query
-            or len(options.query) > 256
-            or options.query.startswith("-")
-        ):
-            parser.error("query must be nonblank text, at most 256 characters")
-        if supplied & {"--feed", "--category", "--interval"}:
-            parser.error("query search does not accept feed/category/interval")
+        validate_query_options(parser, options, supplied)
+    if options.feeds:
+        if options.provider != "jupiter":
+            parser.error("--feeds requires --provider jupiter")
+        if len(set(options.feeds)) != len(options.feeds):
+            parser.error("--feeds must not contain duplicate feed names")
     validate_provider_options(parser, options, supplied)
+
+
+def validate_query_options(parser, options, supplied) -> None:
+    """Normalize search text and reject incompatible discovery flags."""
+
+    options.query = options.query.strip()
+    if (
+        not options.query
+        or len(options.query) > 256
+        or options.query.startswith("-")
+    ):
+        parser.error("query must be nonblank text, at most 256 characters")
+    if supplied & {"--feed", "--feeds", "--category", "--interval"}:
+        parser.error(
+            "query search does not accept feed/feeds/category/interval"
+        )
 
 
 def validate_provider_options(parser, options, supplied) -> None:
@@ -126,15 +156,14 @@ def validate_provider_options(parser, options, supplied) -> None:
             "--page-size",
         }:
             parser.error("Jupiter does not accept Stonks discovery options")
-        if options.feed not in (
-            None,
-            "recent",
-            "toptraded",
-            "toptrending",
-            "toporganicscore",
-        ):
+        if options.feed is not None and options.feed not in JUPITER_FEEDS:
             parser.error("invalid Jupiter feed")
-        if options.interval and options.feed in (None, "recent"):
+        feeds = options.feeds or [options.feed or "recent"]
+        has_ranked_feed = False
+        for feed in feeds:
+            if feed != "recent":
+                has_ranked_feed = True
+        if options.interval and not has_ranked_feed:
             parser.error("--interval requires a ranked Jupiter feed")
     if options.provider == "stonks":
         if options.feed not in (None, "recent", "marketCap", "volume"):
@@ -145,11 +174,13 @@ def validate_provider_options(parser, options, supplied) -> None:
             )
 
 
-def discovery_command(options, page) -> tuple[list[str], dict[str, Any]]:
+def discovery_command(
+    options, page, feed=None
+) -> tuple[list[str], dict[str, Any]]:
     """Build allowlisted arguments and the expected report scope."""
 
     source = options.provider
-    mode = options.feed or "recent"
+    mode = feed or options.feed or "recent"
     command = ["list", source]
     expected = {"source": source, "mode": mode, "on_chain": False}
     if options.query is not None:

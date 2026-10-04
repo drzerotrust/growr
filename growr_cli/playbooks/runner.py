@@ -48,9 +48,10 @@ def validate_document(document) -> None:
 
     if not isinstance(document, dict):
         raise ValueError("Expected a Growr document")
+    tool = document.get("tool", {})
     if (
         document.get("schema_version") != "2.2"
-        or document.get("tool", {}).get("name") != "growr"
+        or tool.get("name") != "growr"
         or document.get("status") not in {"success", "partial", "no_data"}
         or document.get("error") is not None
     ):
@@ -70,11 +71,12 @@ def scan_record(document, kind, address) -> dict[str, Any]:
     if not isinstance(records, list) or len(records) != 1:
         raise ValueError("Expected one scan record")
     record = records[0]
+    identity = record["identity"]
     identity_key = "signature" if kind == "transaction" else "address"
     if (
         record["kind"] != kind
-        or record["identity"][identity_key] != address
-        or record["identity"]["chain"] != "solana"
+        or identity[identity_key] != address
+        or identity["chain"] != "solana"
         or not isinstance(record["facts"], dict)
         or record["facts"].get("source") != "rpc"
         or not isinstance(record["coverage"], list)
@@ -182,11 +184,12 @@ class GrowrRunner:
     def search(self, mints) -> list[dict[str, Any]] | None:
         """Fetch one batch of at most 100 distinct Solana mint IDs."""
 
-        if (
-            not 1 <= len(mints) <= 100
-            or not all(valid_address(mint) for mint in mints)
-            or len(set(mints)) != len(mints)
-        ):
+        if not 1 <= len(mints) <= 100:
+            raise ValueError("Invalid Jupiter mint batch")
+        for mint in mints:
+            if not valid_address(mint):
+                raise ValueError("Invalid Jupiter mint batch")
+        if len(set(mints)) != len(mints):
             raise ValueError("Invalid Jupiter mint batch")
         return self._execute(["search", "jupiter", ",".join(mints)])
 
@@ -225,22 +228,24 @@ class GrowrRunner:
                 limits.extend([flag, str(value)])
         try:
             # An argument list avoids shell interpretation. The child
-            # loads the root .env; endpoints never enter the receipts.
+            # loads selected settings; endpoints stay out of receipts.
+            arguments = [
+                sys.executable,
+                "-m",
+                "growr",
+                "--json",
+                "--no-color",
+            ]
+            arguments.extend(limits)
+            arguments.extend(command)
+            child_timeout = self.timeout if timeout is None else timeout
             result = subprocess.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "growr",
-                    "--json",
-                    "--no-color",
-                    *limits,
-                    *command,
-                ],
+                arguments,
                 cwd=PROJECT_ROOT,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
-                timeout=self.timeout if timeout is None else timeout,
+                timeout=child_timeout,
                 check=False,
                 shell=False,
             )
@@ -267,26 +272,28 @@ class GrowrRunner:
             )
             if validator is not None:
                 evidence = validator(document)
+            elif command[0] == "search":
+                mints = command[2].split(",")
+                evidence = search_records(document, mints)
             else:
-                evidence = (
-                    search_records(document, command[2].split(","))
-                    if command[0] == "search"
-                    else scan_record(document, *command[:2])
-                )
-            coverage = (
-                evidence["coverage"]
-                if isinstance(evidence, dict)
-                else document["coverage"]
-            )
+                kind = command[0]
+                address = command[1]
+                evidence = scan_record(document, kind, address)
+
+            if isinstance(evidence, dict):
+                coverage = evidence["coverage"]
+            else:
+                coverage = document["coverage"]
             run = document["run"]
             if command[0] in {"history", "transaction"}:
                 validate_activity(evidence, command, document["request"])
             requests = measured_requests(run)
-            timing = {
-                key: run[key] for key in ("id", "started_at", "completed_at")
-            }
-            if not all(isinstance(value, str) for value in timing.values()):
-                raise ValueError("Invalid run timestamps")
+            timing = {}
+            for key in ("id", "started_at", "completed_at"):
+                value = run[key]
+                if not isinstance(value, str):
+                    raise ValueError("Invalid run timestamps")
+                timing[key] = value
         except (ValueError, KeyError, TypeError, AttributeError):
             receipt["error"] = "invalid_growr_output"
             return None

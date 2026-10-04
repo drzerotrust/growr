@@ -62,9 +62,12 @@ def investigate(options, runner) -> dict[str, Any]:
 def main(argv=None) -> int:
     """Run the bounded token-to-wallet recipe and emit its report."""
 
-    options = build_parser("token_holders").parse_args(argv)
-    runner = GrowrRunner(options.timeout, subprocess_limit(options))
-    return print_report(investigate(options, runner), options.json)
+    parser = build_parser("token_holders")
+    options = parser.parse_args(argv)
+    call_limit = subprocess_limit(options)
+    runner = GrowrRunner(options.timeout, call_limit)
+    report = investigate(options, runner)
+    return print_report(report, options.json)
 
 
 if __name__ == "__main__":

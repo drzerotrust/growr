@@ -63,18 +63,27 @@ def holding_evidence(holding, owner) -> dict[str, Any]:
         type(decimals) is not int or not 0 <= decimals <= 255
     ):
         raise ValueError("Invalid holding decimals")
+
+    # Copy just the validated account evidence used by this aggregate.
+    account_evidence = []
+    for account in accounts:
+        account_evidence.append(
+            {
+                "address": account["address"],
+                "raw_amount": account["raw_amount"],
+                "state": account["state"],
+            }
+        )
+    amount_tokens = None
+    if decimals is not None:
+        amount_tokens = token_amount(str(amount), decimals)
     return {
         "owner": owner,
         "raw_amount": str(amount),
         "decimals": decimals,
-        "amount_tokens": token_amount(str(amount), decimals)
-        if decimals is not None
-        else None,
+        "amount_tokens": amount_tokens,
         "amount_source": holding.get("amount_source"),
-        "accounts": [
-            {key: item[key] for key in ("address", "raw_amount", "state")}
-            for item in accounts
-        ],
+        "accounts": account_evidence,
     }
 
 
@@ -84,7 +93,8 @@ def group_wallet(wallet) -> list[dict[str, Any]]:
     groups = []
     seen = set()
     for holding in wallet["holdings"] or []:
-        mint, program = holding["mint"], holding["token_program"]
+        mint = holding["mint"]
+        program = holding["token_program"]
         key = (mint, program)
         if (
             not valid_address(mint)
@@ -125,35 +135,14 @@ def analyze(report) -> dict[str, Any]:
                 groups[key] = group
             else:
                 groups[key]["owners"].extend(group["owners"])
+    # Compare only the selected cohort and keep unknown inventories
+    # separate from wallets confirmed not to hold a given token.
     overlaps = []
     for group in groups.values():
-        owners = {row["owner"] for row in group["owners"]}
-        if len(owners) < 2:
-            continue
-        group.update(
-            owner_count=len(owners),
-            selected_owner_count=len(selected),
-            known_absent=sorted(complete - owners),
-            unknown_presence=sorted(selected - complete - owners),
-            target_token=group["mint"] == report["target"],
-            decimals_conflict=len(
-                {
-                    row["decimals"]
-                    for row in group["owners"]
-                    if row["decimals"] is not None
-                }
-            )
-            > 1,
-        )
-        overlaps.append(group)
-    overlaps.sort(
-        key=lambda row: (
-            row["target_token"],
-            row["common_asset"] is not None,
-            row["owner_count"],
-            row["mint"],
-        )
-    )
+        shared = describe_overlap(group, selected, complete, report["target"])
+        if shared is not None:
+            overlaps.append(shared)
+    overlaps.sort(key=overlap_sort_key)
     return {
         "playbook_version": "1.1",
         "playbook": "shared_holdings",
@@ -176,6 +165,40 @@ def analyze(report) -> dict[str, Any]:
     }
 
 
+def describe_overlap(group, selected, complete, target):
+    """Summarize one shared token and its incomplete owner evidence."""
+
+    owners = set()
+    decimals = set()
+    for holding in group["owners"]:
+        owners.add(holding["owner"])
+        if holding["decimals"] is not None:
+            decimals.add(holding["decimals"])
+    if len(owners) < 2:
+        return None
+
+    group.update(
+        owner_count=len(owners),
+        selected_owner_count=len(selected),
+        known_absent=sorted(complete - owners),
+        unknown_presence=sorted(selected - complete - owners),
+        target_token=group["mint"] == target,
+        decimals_conflict=len(decimals) > 1,
+    )
+    return group
+
+
+def overlap_sort_key(group) -> tuple[bool, bool, int, str]:
+    """Place other assets before the target and known common assets."""
+
+    return (
+        group["target_token"],
+        group["common_asset"] is not None,
+        group["owner_count"],
+        group["mint"],
+    )
+
+
 def main(argv=None) -> int:
     """Read a saved report and print exact shared quantities."""
 
@@ -189,7 +212,8 @@ def main(argv=None) -> int:
     parser.add_argument("--json", action="store_true")
     options = parser.parse_args(argv)
     try:
-        result = analyze(load_report(options.report))
+        report = load_report(options.report)
+        result = analyze(report)
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         result = {
             "playbook_version": "1.1",
@@ -212,11 +236,12 @@ def main(argv=None) -> int:
             )
             for owner in group["owners"]:
                 amount = owner["amount_tokens"]
-                quantity = (
-                    "%s tokens" % display_number(amount)
-                    if amount is not None
-                    else "%s raw units" % display_number(owner["raw_amount"])
-                )
+                if amount is None:
+                    quantity = "%s raw units" % display_number(
+                        owner["raw_amount"]
+                    )
+                else:
+                    quantity = "%s tokens" % display_number(amount)
                 print("  %s: %s" % (display(owner["owner"]), quantity))
     return 1 if result["status"] == "error" else 0
 

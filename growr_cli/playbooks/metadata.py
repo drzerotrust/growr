@@ -15,7 +15,8 @@ TOKEN_PROGRAMS = {
 def metadata_details(record) -> dict[str, Any]:
     """Keep Jupiter metadata separate from RPC evidence."""
 
-    values = record["metrics"]["jupiter"]["values"]
+    jupiter = record["metrics"]["jupiter"]
+    values = jupiter["values"]
     result = {
         "source": "jupiter",
         "status": "success",
@@ -57,10 +58,16 @@ def jupiter_units(values) -> dict[str, Any]:
 def fetch_metadata(mints, runner, batch_limit) -> dict[str, Any]:
     """Cache one outcome per mint across sequential batches of 100."""
 
-    mints = list(dict.fromkeys(mints))
+    # Preserve first-seen order while sharing lookups across wallets.
+    unique_mints = []
+    seen = set()
+    for mint in mints:
+        if mint not in seen:
+            seen.add(mint)
+            unique_mints.append(mint)
     cache = {}
-    for offset in range(0, len(mints), 100):
-        batch = mints[offset : offset + 100]
+    for offset in range(0, len(unique_mints), 100):
+        batch = unique_mints[offset : offset + 100]
         requested = offset < batch_limit * 100
         status = "skipped" if batch_limit == 0 else "budget_exhausted"
         for mint in batch:
@@ -78,21 +85,22 @@ def fetch_metadata(mints, runner, batch_limit) -> dict[str, Any]:
         for mint in batch:
             cache[mint]["status"] = status
         for record in records or []:
-            cache[record["identity"]["mint"]].update(metadata_details(record))
+            mint = record["identity"]["mint"]
+            details = metadata_details(record)
+            cache[mint].update(details)
     return cache
 
 
 def enrich_wallets(report, resolver, options) -> None:
     """Share wallet metadata before optional RPC fallback."""
 
-    holdings = [
-        holding
-        for wallet in report["wallets"]
-        for holding in wallet["holdings"] or []
-    ]
+    holdings = []
+    mints = []
+    for wallet in report["wallets"]:
+        for holding in wallet["holdings"] or []:
+            holdings.append(holding)
+            mints.append(holding["mint"])
     limit = 0 if options.no_jupiter else options.jupiter_batch_limit
-    metadata = fetch_metadata(
-        [holding["mint"] for holding in holdings], resolver.runner, limit
-    )
+    metadata = fetch_metadata(mints, resolver.runner, limit)
     report["metadata_lookups"] = metadata
     resolve_amounts(holdings, resolver, metadata)

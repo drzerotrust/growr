@@ -48,13 +48,14 @@ def build_parser(playbook) -> argparse.ArgumentParser:
 
     token = playbook == "token_holders"
     target = "MINT" if token else "WALLET"
+    description = "Aggregate a wallet's nonzero SPL and Token-2022 holdings."
+    if token:
+        description = (
+            "Inspect sampled token owners and their nonzero holdings."
+        )
     parser = argparse.ArgumentParser(
         prog="growr playbook %s" % playbook.replace("_", "-"),
-        description=(
-            "Inspect sampled token owners and their nonzero holdings."
-            if token
-            else "Aggregate a wallet's nonzero SPL and Token-2022 holdings."
-        ),
+        description=description,
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
@@ -139,25 +140,25 @@ def new_report(playbook, options) -> dict[str, Any]:
 def finish_report(report, runner, resolver) -> dict[str, Any]:
     """Expose call counts, estimates and incomplete observations."""
 
-    wallets = report["wallets"]
-    incomplete = any(wallet["status"] != "success" for wallet in wallets)
-    amounts_missing = any(
-        holding["amount_status"] not in {"resolved", "not_requested"}
-        for wallet in wallets
-        for holding in wallet["holdings"] or []
-    )
-    metadata_missing = any(
-        holding["metadata"]["status"] not in {"success", "skipped"}
-        or holding["metadata_conflicts"]
-        for wallet in wallets
-        for holding in wallet["holdings"] or []
-    )
-    scans_partial = any(
-        scan["status"] not in {"success", "no_data"} for scan in runner.scans
-    )
-    if report["status"] in {"success", "no_data"} and (
-        incomplete or amounts_missing or metadata_missing or scans_partial
-    ):
+    # Check inventory, quantity conversion and metadata independently.
+    incomplete = False
+    for wallet in report["wallets"]:
+        if wallet["status"] != "success":
+            incomplete = True
+        for holding in wallet["holdings"] or []:
+            if holding["amount_status"] not in {"resolved", "not_requested"}:
+                incomplete = True
+            metadata_status = holding["metadata"]["status"]
+            if metadata_status not in {"success", "skipped"}:
+                incomplete = True
+            if holding["metadata_conflicts"]:
+                incomplete = True
+
+    for scan in runner.scans:
+        if scan["status"] not in {"success", "no_data"}:
+            incomplete = True
+
+    if report["status"] in {"success", "no_data"} and incomplete:
         report["status"] = "partial"
     report.update(
         completed_at=datetime.now(timezone.utc).isoformat(),
@@ -179,7 +180,10 @@ def subprocess_limit(options) -> int:
 def request_budget(runner, resolver) -> dict[str, Any]:
     """Distinguish child attempts from estimated network calls."""
 
-    searches = sum(scan["command"][0] == "search" for scan in runner.scans)
+    searches = 0
+    for scan in runner.scans:
+        if scan["command"][0] == "search":
+            searches += 1
     return {
         "subprocesses_attempted": len(runner.scans),
         "subprocess_limit": runner.max_calls,
@@ -196,9 +200,11 @@ def request_budget(runner, resolver) -> dict[str, Any]:
 def display(value) -> str:
     """Remove controls from provider names before terminal output."""
 
-    return "".join(
-        character for character in str(value) if character.isprintable()
-    )
+    printable = []
+    for character in str(value):
+        if character.isprintable():
+            printable.append(character)
+    return "".join(printable)
 
 
 def display_number(value) -> str:
@@ -317,5 +323,6 @@ def _print_metadata(holding) -> None:
         )
     if metadata.get("price_usd") is not None:
         print("    Jupiter price USD: %s" % metadata["price_usd"])
-    for link in metadata.get("social", {}).get("links", []):
+    social = metadata.get("social", {})
+    for link in social.get("links", []):
         print("    %s: %s" % (display(link["kind"]), display(link["url"])))

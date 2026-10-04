@@ -1,5 +1,6 @@
 """Bound live screening work and preserve replayable public evidence."""
 
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import partial
@@ -86,6 +87,9 @@ def discover(
 ) -> tuple[list[dict[str, Any]], list[str], dict[str, Any]]:
     """Read a bounded set of provider pages without on-chain fanout."""
 
+    if options.feeds:
+        return discover_feeds(options, session)
+
     evidence = session.evidence
     pages = []
     stop = "page_limit"
@@ -117,16 +121,89 @@ def discover(
     return evidence, mints, {"pages": pages, "stop_reason": stop}
 
 
+def discover_feeds(options, session):
+    """Collect each Jupiter feed before choosing the combined sample."""
+
+    feeds = []
+    mint_groups = []
+    for feed in options.feeds:
+        command, expected = discovery_command(options, options.page, feed)
+        scans_before = len(session.runner.scans)
+        document = session.call(
+            command,
+            partial(discovery_document, expected=("list", expected)),
+            http=1,
+        )
+        scan_index = None
+        if len(session.runner.scans) > scans_before:
+            scan_index = scans_before
+
+        receipt = {
+            "request": expected,
+            "scan_index": scan_index,
+            "status": "not_requested" if scan_index is None else "failed",
+            "records_returned": None,
+            "unique_mints": None,
+        }
+        feeds.append(receipt)
+        if document is None:
+            # A failed or empty feed must not hide later sources.
+            continue
+
+        records = append_document([], document, scan_index)
+        session.evidence.extend(records)
+        mints = evidence_mints(records)
+        mint_groups.append(mints)
+        receipt.update(
+            status=document["status"],
+            records_returned=len(document["records"]),
+            unique_mints=len(mints),
+        )
+
+    # Cap this interleaved order in the entry point, after all feeds.
+    # Retain receipts and selected duplicate observations for replay.
+    mints = interleave_mints(mint_groups)
+    unavailable = False
+    for receipt in feeds:
+        if receipt["records_returned"] is None:
+            unavailable = True
+    stop = "request_failed_or_bounded" if unavailable else "feeds_complete"
+    return session.evidence, mints, {"feeds": feeds, "stop_reason": stop}
+
+
+def interleave_mints(mint_groups) -> list[str]:
+    """Take one unseen mint per feed per turn, retaining feed order."""
+
+    queues = []
+    for mints in mint_groups:
+        queues.append(deque(mints))
+    selected = []
+    seen = set()
+    while any(queues):
+        for queue in queues:
+            while queue:
+                mint = queue.popleft()
+                if mint in seen:
+                    continue
+                seen.add(mint)
+                selected.append(mint)
+                break
+    return selected
+
+
 def explicit_mints(
     options, criteria, session
 ) -> tuple[list[dict[str, Any]], list[str], dict[str, Any]]:
     """Retain supplied mints even when Jupiter metadata is missing."""
 
-    mints = list(dict.fromkeys(options.mints))
+    mints = []
+    for mint in options.mints:
+        if mint not in mints:
+            mints.append(mint)
     evidence = session.evidence
-    fields = {
-        row["field"] for row in requirements(criteria) + criteria["ranking"]
-    }
+    fields = set()
+    for rule in requirements(criteria) + criteria["ranking"]:
+        fields.add(rule["field"])
     if fields - RPC_FIELDS:
         query = ",".join(mints)
         expected = {"source": "jupiter", "mode": "search", "query": query}
@@ -136,10 +213,11 @@ def explicit_mints(
             http=1,
         )
         if document is not None:
-            if any(
-                row["identity"]["mint"] not in mints
-                for row in document["records"]
-            ):
+            unexpected_mint = False
+            for record in document["records"]:
+                if record["identity"]["mint"] not in mints:
+                    unexpected_mint = True
+            if unexpected_mint:
                 session.gaps.append("unexpected_mint")
             else:
                 evidence = append_document(
@@ -153,10 +231,21 @@ def evaluated_candidates(
 ) -> list[dict[str, Any]]:
     """Recompute decisions from original observations."""
 
-    return [
-        evaluate(candidate, criteria, as_of)
-        for candidate in candidates_from_evidence(evidence, mints, as_of)
-    ]
+    candidates = candidates_from_evidence(evidence, mints, as_of)
+    results = []
+    for candidate in candidates:
+        results.append(evaluate(candidate, criteria, as_of))
+    return results
+
+
+def needs_rpc_verification(candidate) -> bool:
+    """Find missing RPC fields needed for filtering or ranking."""
+
+    fields = candidate["requirements"] + candidate["ranking"]
+    for observation in fields:
+        if observation["field"] in RPC_FIELDS and observation["value"] is None:
+            return True
+    return False
 
 
 def verify_candidates(evidence, mints, criteria, session) -> None:
@@ -164,18 +253,15 @@ def verify_candidates(evidence, mints, criteria, session) -> None:
 
     as_of = datetime.now(timezone.utc)
     candidates = evaluated_candidates(evidence, mints, criteria, as_of)
-    selected = sorted(
-        (row for row in candidates if row["decision"] != "fail"),
-        key=rank_key,
-    )
+    # Do not spend RPC calls on a candidate already known to fail.
+    selected = []
+    for candidate in candidates:
+        if candidate["decision"] != "fail":
+            selected.append(candidate)
+    selected.sort(key=rank_key)
     scans = 0
     for candidate in selected:
-        fields = candidate["requirements"] + candidate["ranking"]
-        needs_rpc = any(
-            row["field"] in RPC_FIELDS and row["value"] is None
-            for row in fields
-        )
-        if not needs_rpc:
+        if not needs_rpc_verification(candidate):
             continue
         if scans >= session.options.scan_limit:
             session.gaps.append("scan_limit")
@@ -201,26 +287,29 @@ def report_result(
 
     as_of = datetime.now(timezone.utc)
     rows = evaluated_candidates(evidence, mints, criteria, as_of)
-    matched = sorted(
-        (row for row in rows if row["decision"] == "pass"), key=rank_key
-    )
-    unknown = sorted(
-        (row for row in rows if row["decision"] == "unknown"), key=rank_key
-    )
-    rejected = sorted(
-        (row for row in rows if row["decision"] == "fail"), key=rank_key
-    )
+    matched, unknown, rejected = group_decisions(rows)
     gaps = sorted(set(session.gaps)) if session else []
     if scope.get("source_status") == "partial":
         gaps.append("source_report_partial")
-    partial_result = bool(
-        gaps or unknown or any(not row["ranking_complete"] for row in matched)
-    )
+    partial_result = bool(gaps or unknown)
+    for candidate in matched:
+        if not candidate["ranking_complete"]:
+            partial_result = True
     status = "success" if rows else "no_data"
     if partial_result:
         status = "partial"
     if session and not evidence and session.gaps:
         status = "error"
+    report_scope = screening_scope(scope, options, mints, session is None)
+    if session is not None:
+        budget = session.budget()
+    else:
+        budget = {
+            "reserved_upper_bounds": {"rpc": 0, "http": 0},
+            "subprocesses_attempted": 0,
+            "measured": measured_totals([]),
+        }
+
     return {
         "playbook_version": "1.1",
         "playbook": "token_screen",
@@ -228,25 +317,7 @@ def report_result(
         "status": status,
         "as_of": as_of.isoformat(),
         "criteria": criteria,
-        "scope": {
-            **scope,
-            "selected_mints": mints,
-            "offline": session is None,
-            "limits": {
-                name: getattr(options, name)
-                for name in (
-                    "candidate_limit",
-                    "scan_limit",
-                    "top",
-                    "pages",
-                    "page_size",
-                    "timeout",
-                    "max_seconds",
-                    "max_rpc_calls",
-                    "max_http_calls",
-                )
-            },
-        },
+        "scope": report_scope,
         "counts": {
             "evaluated": len(rows),
             "matched": len(matched),
@@ -260,13 +331,7 @@ def report_result(
         "gaps": gaps,
         "evidence": evidence,
         "scans": session.runner.scans if session else [],
-        "budget": session.budget()
-        if session
-        else {
-            "reserved_upper_bounds": {"rpc": 0, "http": 0},
-            "subprocesses_attempted": 0,
-            "measured": measured_totals([]),
-        },
+        "budget": budget,
         "notes": [
             "Best matches within the stated discovery and verification scope.",
             "Ranking follows ordered criteria; missing values sort last. "
@@ -277,3 +342,47 @@ def report_result(
             "Reads are not one slot. Saved evidence is not attested.",
         ],
     }
+
+
+def group_decisions(rows) -> tuple[list[dict[str, Any]], ...]:
+    """Rank passing, unresolved and rejected candidates separately."""
+
+    matched = []
+    unknown = []
+    rejected = []
+    for row in rows:
+        decision = row["decision"]
+        if decision == "pass":
+            matched.append(row)
+        elif decision == "unknown":
+            unknown.append(row)
+        elif decision == "fail":
+            rejected.append(row)
+    matched.sort(key=rank_key)
+    unknown.sort(key=rank_key)
+    rejected.sort(key=rank_key)
+    return matched, unknown, rejected
+
+
+def screening_scope(scope, options, mints, offline) -> dict[str, Any]:
+    """Attach selection and configured limits to the discovery scope."""
+
+    limits = {}
+    for name in (
+        "candidate_limit",
+        "scan_limit",
+        "top",
+        "pages",
+        "page_size",
+        "timeout",
+        "max_seconds",
+        "max_rpc_calls",
+        "max_http_calls",
+    ):
+        limits[name] = getattr(options, name)
+
+    result = dict(scope)
+    result["selected_mints"] = mints
+    result["offline"] = offline
+    result["limits"] = limits
+    return result
